@@ -133,7 +133,8 @@ namespace
     };
 
     Creature* FindLoadedCreatureBySpawnId(Map* map, ObjectGuid::LowType spawnId);
-    std::string GetNemesisDisplayName(Map* map, ObjectGuid::LowType spawnId, NemesisState const& state);
+    std::string GetLocaleAwareCreatureName(uint32 entry, LocaleConstant locale);
+    std::string GetNemesisDisplayName(Map* map, ObjectGuid::LowType spawnId, NemesisState const& state, LocaleConstant locale = LOCALE_enUS);
     void EnsureCacheLoaded();
     bool IsExpired(NemesisState const& state);
 
@@ -578,13 +579,18 @@ namespace
         }
     }
 
-    std::string GetZoneName(uint32 zoneId)
+    std::string GetZoneName(uint32 zoneId, LocaleConstant locale = LOCALE_enUS)
     {
         if (!zoneId)
             return "Unknown";
 
         if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(zoneId))
+        {
+            if (locale != LOCALE_enUS && area->area_name[locale] && area->area_name[locale][0])
+                return area->area_name[locale];
+
             return area->area_name[0] ? area->area_name[0] : "Unknown";
+        }
 
         return "Unknown";
     }
@@ -716,12 +722,14 @@ namespace
 
     NemesisAddonView BuildAddonView(Player* player, ObjectGuid::LowType spawnId, NemesisState const& state)
     {
+        LocaleConstant const locale = player ? player->GetSession()->GetSessionDbLocaleIndex() : LOCALE_enUS;
+
         NemesisAddonView view;
         view.spawnId = spawnId;
         view.creatureEntry = state.creatureEntry;
         view.mapId = state.mapId;
         view.zoneId = state.zoneId;
-        view.zoneName = SanitizeAddonField(GetZoneName(state.zoneId));
+        view.zoneName = SanitizeAddonField(GetZoneName(state.zoneId, locale));
         view.x = state.homeX;
         view.y = state.homeY;
         view.z = state.homeZ;
@@ -741,9 +749,9 @@ namespace
 
         if (Creature* liveCreature = FindLoadedCreatureBySpawnId(playerMap, spawnId))
         {
-            view.name = SanitizeAddonField(liveCreature->GetName());
+            view.name = SanitizeAddonField(GetLocaleAwareCreatureName(liveCreature->GetEntry(), locale));
             view.zoneId = liveCreature->GetZoneId();
-            view.zoneName = SanitizeAddonField(GetZoneName(view.zoneId));
+            view.zoneName = SanitizeAddonField(GetZoneName(view.zoneId, locale));
             view.x = liveCreature->GetPositionX();
             view.y = liveCreature->GetPositionY();
             view.z = liveCreature->GetPositionZ();
@@ -753,7 +761,7 @@ namespace
         }
         else
         {
-            view.name = SanitizeAddonField(GetNemesisDisplayName(nullptr, spawnId, state));
+            view.name = SanitizeAddonField(GetNemesisDisplayName(nullptr, spawnId, state, locale));
             if (CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(state.creatureEntry))
                 view.level = creatureTemplate->maxlevel;
             view.threatClass = GetThreatClassForPlayer(player, state, view.level);
@@ -1023,15 +1031,25 @@ namespace
         return bounds.first->second;
     }
 
-    std::string GetNemesisDisplayName(Map* map, ObjectGuid::LowType spawnId, NemesisState const& state)
+    std::string GetLocaleAwareCreatureName(uint32 entry, LocaleConstant locale)
+    {
+        if (locale != LOCALE_enUS)
+            if (CreatureLocale const* cl = sObjectMgr->GetCreatureLocale(entry))
+                if (cl->Name.size() > locale && !cl->Name[locale].empty())
+                    return cl->Name[locale];
+
+        if (CreatureTemplate const* ct = sObjectMgr->GetCreatureTemplate(entry))
+            return ct->Name;
+
+        return Acore::StringFormat("entry {}", entry);
+    }
+
+    std::string GetNemesisDisplayName(Map* map, ObjectGuid::LowType spawnId, NemesisState const& state, LocaleConstant locale)
     {
         if (Creature* liveCreature = FindLoadedCreatureBySpawnId(map, spawnId))
-            return liveCreature->GetName();
+            return GetLocaleAwareCreatureName(liveCreature->GetEntry(), locale);
 
-        if (CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(state.creatureEntry))
-            return creatureTemplate->Name;
-
-        return Acore::StringFormat("entry {}", state.creatureEntry);
+        return GetLocaleAwareCreatureName(state.creatureEntry, locale);
     }
 
     bool IsExpired(NemesisState const& state)
@@ -1733,27 +1751,27 @@ namespace
         {
             bool const reachedRankFive = existed && previousRank < 5 && state.rank >= 5;
             std::string const creatureName = killer->GetName();
-            std::string const coords = GetNemesisCoordinates(killer);
+            uint32 const zoneId = killer->GetZoneId();
             uint8 const rank = state.rank;
             uint32 const affixMask = state.affixMask;
 
             if (existed)
             {
                 BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_RANK_UP,
-                    [creatureName, rank, coords, affixMask](LocaleConstant locale)
+                    [creatureName, rank, zoneId, affixMask](LocaleConstant locale)
                     {
                         return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_RANK_UP),
-                            creatureName, rank, coords, GetAffixList(affixMask, locale));
+                            creatureName, rank, GetZoneName(zoneId, locale), GetAffixList(affixMask, locale));
                     }, reachedRankFive);
             }
             else
             {
                 std::string const playerName = killed->GetName();
                 BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_CREATED,
-                    [creatureName, playerName, coords, affixMask](LocaleConstant locale)
+                    [creatureName, playerName, zoneId, affixMask](LocaleConstant locale)
                     {
                         return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_CREATED),
-                            creatureName, playerName, coords, GetAffixList(affixMask, locale));
+                            creatureName, playerName, GetZoneName(zoneId, locale), GetAffixList(affixMask, locale));
                     }, reachedRankFive);
             }
         }
@@ -1796,14 +1814,14 @@ public:
             std::string const playerName = killer->GetName();
             std::string const creatureName = killed->GetName();
             uint8 const rank = state.rank;
-            std::string const coords = GetNemesisCoordinates(killed);
+            uint32 const zoneId = killed->GetZoneId();
             NemesisStringId const announceId = revenge ? NemesisStringId::ANNOUNCE_REVENGE : NemesisStringId::ANNOUNCE_BOUNTY;
 
             BroadcastNemesisLocalized(killed, announceId,
-                [playerName, creatureName, rank, coords, announceId](LocaleConstant locale)
+                [playerName, creatureName, rank, zoneId, announceId](LocaleConstant locale)
                 {
                     return Acore::StringFormat(GetNemesisString(locale, announceId),
-                        playerName, creatureName, rank, coords);
+                        playerName, creatureName, rank, GetZoneName(zoneId, locale));
                 });
         }
     }
@@ -1859,7 +1877,11 @@ public:
             return;
 
         if (creature->IsAlive())
+        {
+            // Re-apply visual auras in case they were removed by combat exit / evade / reset
+            ApplyNemesisVisualAuras(creature, state.rank);
             return;
+        }
 
         EraseRegenAccumulator(creature);
         DeleteNemesisState(creature, "dead");

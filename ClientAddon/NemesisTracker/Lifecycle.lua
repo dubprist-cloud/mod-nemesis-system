@@ -142,6 +142,28 @@ function NT:OnEnable()
     self:RegisterEvent("CHAT_MSG_SYSTEM")
     self:RegisterEvent("CHAT_MSG_ADDON")
     self.refreshTimer = self:ScheduleRepeatingTimer("RefreshVisibleUI", 1)
+
+    if GameTooltip and hooksecurefunc then
+        hooksecurefunc(GameTooltip, "SetUnit", function(self, ...)
+            local unit = ...
+            if not unit then return end
+
+            local guid = UnitGUID(unit)
+            if not guid then return end
+
+            local spawnId = parseSpawnIdFromGuid(guid)
+            if not spawnId then return end
+
+            local nemesis = NT.data.nemeses[spawnId]
+            if not nemesis then return end
+
+            self:AddLine(" ")
+            self:AddLine(string.format("|cff00ff00Nemesis|r R%d %s", nemesis.rank, nemesis.rankTier or ""))
+            if nemesis.affixText and nemesis.affixText ~= "" and nemesis.affixText ~= "None" then
+                self:AddLine(nemesis.affixText, 1, 0.5, 0)
+            end
+        end)
+    end
 end
 
 function NT:OnDisable()

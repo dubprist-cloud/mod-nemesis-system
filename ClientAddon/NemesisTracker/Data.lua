@@ -45,6 +45,16 @@ function NT:GetZoneKey(zoneId, zoneName)
     return zoneKey(zoneId, zoneName)
 end
 
+function NT:GetLocalizedZoneName(zoneId, fallback)
+    if zoneId and GetAreaInfo then
+        local areaName = GetAreaInfo(zoneId)
+        if areaName then
+            return areaName
+        end
+    end
+    return fallback or L["Unknown"]
+end
+
 function NT:GetNow()
     return time()
 end

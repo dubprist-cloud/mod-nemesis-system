@@ -344,7 +344,7 @@ function UI:RefreshList()
             row.name:SetTextColor(r, g, b)
             row.name:SetText(nemesis.name)
             row.rank:SetText(string.format(L["R%d"], nemesis.rank or 1))
-            row.zone:SetText(nemesis.zoneName or L["Unknown"])
+            row.zone:SetText(NT:GetLocalizedZoneName(nemesis.zoneId, nemesis.zoneName))
             row.lastSeen:SetText(self:FormatLastSeen(nemesis.lastSeenAt))
             local alpha = NT:GetVisibilityAlpha(nemesis)
             row:SetAlpha(alpha)
@@ -432,7 +432,7 @@ function UI:RefreshMap()
                         GameTooltip:SetOwner(button, "ANCHOR_CURSOR")
                         GameTooltip:SetText(target.name or L["Nemesis"])
                         GameTooltip:AddLine(string.format(L["Level %d  Rank %d - %s"], target.level or 0, target.rank or 1, L[target.rankTier] or target.rankTier or L["Marked"]), 1, 1, 1)
-                        GameTooltip:AddLine(target.zoneName or L["Unknown"], 0.8, 0.8, 0.8)
+                        GameTooltip:AddLine(NT:GetLocalizedZoneName(target.zoneId, target.zoneName), 0.8, 0.8, 0.8)
                         GameTooltip:AddLine(L["Last Seen: "] .. UI:FormatLastSeen(target.lastSeenAt), 0.7, 0.9, 0.7)
                         GameTooltip:AddLine(L["Reward: "] .. (L[target.rewardClass] or target.rewardClass or L["none"]), 0.8, 0.8, 0.2)
                         GameTooltip:AddLine(L["Threat: "] .. (L[target.threatClass] or target.threatClass or L["low"]), 1.0, 0.4, 0.2)
@@ -678,7 +678,7 @@ function UI:CreateRow(parent, index)
             return
         end
 
-        DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Nemesis waypoint: %s - %s (%.1f, %.1f, %.1f)"], button.nemesis.name or L["Nemesis"], button.nemesis.zoneName or L["Unknown"], button.nemesis.x or 0, button.nemesis.y or 0, button.nemesis.z or 0))
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Nemesis waypoint: %s - %s (%.1f, %.1f, %.1f)"], button.nemesis.name or L["Nemesis"], NT:GetLocalizedZoneName(button.nemesis.zoneId, button.nemesis.zoneName), button.nemesis.x or 0, button.nemesis.y or 0, button.nemesis.z or 0))
     end)
 
     row:SetScript("OnEnter", function(button)
@@ -692,7 +692,7 @@ function UI:CreateRow(parent, index)
         GameTooltip:AddLine(string.format(L["Level %d  Rank %d - %s"], nemesis.level or 0, nemesis.rank or 1, L[nemesis.rankTier] or nemesis.rankTier or L["Marked"]), 1, 1, 1)
         GameTooltip:AddLine(string.format(L["Relation: %s"], L[nemesis.relation] or nemesis.relation or L["public"]), 0.7, 0.9, 1)
         GameTooltip:AddLine(string.format(L["Reward: %s  Threat: %s"], L[nemesis.rewardClass] or nemesis.rewardClass or L["none"], L[nemesis.threatClass] or nemesis.threatClass or L["low"]), 1, 0.82, 0.2)
-        GameTooltip:AddLine(string.format(L["Zone: %s"], nemesis.zoneName or L["Unknown"]), 0.85, 0.85, 0.85)
+        GameTooltip:AddLine(string.format(L["Zone: %s"], NT:GetLocalizedZoneName(nemesis.zoneId, nemesis.zoneName)), 0.85, 0.85, 0.85)
         GameTooltip:AddLine(L["Last Seen: "] .. self:FormatLastSeen(nemesis.lastSeenAt), 0.7, 0.9, 0.7)
         GameTooltip:AddLine(string.format(L["Status: %s  Source: %s"], (L[NT:GetStalenessState(nemesis)] or NT:GetStalenessState(nemesis)), L[nemesis.lastSeenSource] or nemesis.lastSeenSource or L["unknown"]), 0.8, 0.8, 0.8)
         GameTooltip:Show()
@@ -761,7 +761,7 @@ function UI:ShowZoneMenu()
 
         for _, zone in ipairs(zones) do
             table.insert(menu, {
-                text = zone.zoneName or L["Unknown"],
+                text = NT:GetLocalizedZoneName(zone.zoneId, zone.zoneName),
                 checked = zone.zoneKey == NT.data.displayedZoneKey,
                 func = function()
                     NT:SelectDisplayedZone(zone.zoneId, zone.zoneName, zone.zoneKey)
@@ -833,7 +833,7 @@ function UI:Create()
         if not nemesis then
             return
         end
-        DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Nemesis waypoint: %s - %s (%.1f, %.1f, %.1f)"], nemesis.name or L["Nemesis"], nemesis.zoneName or L["Unknown"], nemesis.x or 0, nemesis.y or 0, nemesis.z or 0))
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Nemesis waypoint: %s - %s (%.1f, %.1f, %.1f)"], nemesis.name or L["Nemesis"], NT:GetLocalizedZoneName(nemesis.zoneId, nemesis.zoneName), nemesis.x or 0, nemesis.y or 0, nemesis.z or 0))
     end)
 
     local filters = CreateFrame("Frame", nil, frame)
