@@ -155,7 +155,7 @@ function NT:GetSelectedNemesis()
 end
 
 function NT:GetVisibleRows()
-    return 10
+    return 9
 end
 
 function NT:GetMaxPage()
@@ -212,6 +212,18 @@ function NT:EnsureDisplayedZone()
     end
 
     local currentKey = zoneKey(self.data.displayedZoneId, self.data.displayedZoneName)
+    if not self.data.displayedZoneId then
+        local playerZone = GetRealZoneText()
+        if playerZone then
+            for _, zone in ipairs(zones) do
+                if zone.zoneName == playerZone then
+                    self:SetDisplayedZone(zone.zoneId, zone.zoneName, zone.zoneKey)
+                    return zone.zoneId, zone.zoneName
+                end
+            end
+        end
+    end
+
     for _, zone in ipairs(zones) do
         if zone.zoneKey == currentKey or zone.zoneKey == self.data.displayedZoneKey then
             self:SetDisplayedZone(zone.zoneId, zone.zoneName, zone.zoneKey)

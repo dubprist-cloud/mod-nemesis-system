@@ -5,9 +5,9 @@ NT.UI = NT.UI or {}
 local UI = NT.UI
 local L = NT.L
 
-local DEFAULT_ROW_HEIGHT = 40
-local COMPACT_ROW_HEIGHT = 32
-local MAX_ROW_COUNT = 10
+local DEFAULT_ROW_HEIGHT = 48
+local COMPACT_ROW_HEIGHT = 38
+local MAX_ROW_COUNT = 9
 local FILTERS = {
     { key = "all", label = L["All"] },
     { key = "own", label = L["Own"] },
@@ -80,6 +80,15 @@ local function threatColor(threat)
         return 1.0, 0.82, 0.0
     end
     return 0.4, 1.0, 0.4
+end
+
+local function rankColor(rank)
+    local r = rank or 1
+    if r >= 5 then return 0.6, 0.2, 1.0 end
+    if r == 4 then return 1.0, 0.2, 0.2 end
+    if r == 3 then return 1.0, 0.6, 0.0 end
+    if r == 2 then return 1.0, 0.9, 0.0 end
+    return 0.2, 0.9, 0.2
 end
 
 local function getMarkerTexCoord(rank)
@@ -258,12 +267,12 @@ function UI:FormatLastSeen(lastSeenAt)
 
     local age = math.max(0, time() - lastSeenAt)
     if age < 60 then
-        return string.format(L["%ds ago"], age)
+        return string.format(L["%ds"], age)
     end
     if age < 3600 then
-        return string.format(L["%dm ago"], math.floor(age / 60))
+        return string.format(L["%dm"], math.floor(age / 60))
     end
-    return string.format(L["%dh ago"], math.floor(age / 3600))
+    return string.format(L["%dh"], math.floor(age / 3600))
 end
 
 function UI:RefreshStatus()
@@ -416,8 +425,8 @@ function UI:RefreshMap()
                 local marker = self.markers[spawnId]
                 if not marker then
                     marker = CreateFrame("Button", nil, self.canvas)
-                    marker:SetWidth(18)
-                    marker:SetHeight(18)
+                    marker:SetWidth(10)
+                    marker:SetHeight(10)
                     marker.texture = marker:CreateTexture(nil, "ARTWORK")
                     marker.texture:SetAllPoints(marker)
                     marker:SetScript("OnClick", function(button)
@@ -453,11 +462,9 @@ function UI:RefreshMap()
                 marker:Show()
                 marker:SetAlpha(NT:GetVisibilityAlpha(nemesis))
 
-                local r, g, b = relationColor(nemesis.relation)
-                marker.texture:SetTexture("Interface\\MINIMAP\\POIIcons")
-                marker.texture:SetTexCoord(getMarkerTexCoord(nemesis.rank or 1))
-                local tr, tg, tb = threatColor(nemesis.threatClass)
-                marker.texture:SetVertexColor((r + tr) / 2, (g + tg) / 2, (b + tb) / 2)
+                marker.texture:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcon_8")
+                local r, g, b = rankColor(nemesis.rank or 1)
+                marker.texture:SetVertexColor(r, g, b)
                 marker:SetScale(1.0)
             end
         end
@@ -478,36 +485,42 @@ function UI:RefreshPlayerMarker()
         return
     end
 
-    if not self.playerMarker then
-        self.playerMarker = self.canvas:CreateTexture(nil, "ARTWORK")
-        self.playerMarker:SetSize(14, 14)
-        self.playerMarker:SetTexture("Interface\\MINIMAP\\POIIcons")
-        self.playerMarker:SetTexCoord(0, 0.125, 0, 0.125)
-        self.playerMarker:SetVertexColor(0.0, 1.0, 0.2)
+    if not self.playerArrow then
+        self.playerArrow = self.canvas:CreateTexture(nil, "OVERLAY")
+        self.playerArrow:SetSize(4, 4)
+        self.playerArrow:SetTexture("Interface\\BUTTONS\\WHITE8X8")
+        self.playerArrow:SetVertexColor(1.0, 1.0, 1.0)
+    end
+
+    local _, displayedZoneName = getDisplayedZoneInfo()
+    if not displayedZoneName then
+        self.playerArrow:Hide()
+        return
+    end
+
+    if GetRealZoneText() ~= displayedZoneName then
+        self.playerArrow:Hide()
+        return
     end
 
     local px, py = GetPlayerMapPosition("player")
     if not px or (px == 0 and py == 0) then
-        SetMapToCurrentZone()
-        px, py = GetPlayerMapPosition("player")
-        if not px or (px == 0 and py == 0) then
-            self.playerMarker:Hide()
-            return
-        end
+        self.playerArrow:Hide()
+        return
     end
 
     local w = self.canvas:GetWidth()
     local h = self.canvas:GetHeight()
     if w <= 0 or h <= 0 then
-        self.playerMarker:Hide()
+        self.playerArrow:Hide()
         return
     end
 
-    self.playerMarker:ClearAllPoints()
+    self.playerArrow:ClearAllPoints()
     local adjustedPx = clamp(px - MAP_MARKER_X_LIFT, 0, 1)
     local adjustedPy = clamp(py - MAP_MARKER_Y_LIFT, 0, 1)
-    self.playerMarker:SetPoint("CENTER", self.canvas, "TOPLEFT", (w * MAP_HORIZONTAL_STRETCH) * adjustedPx, -((h * MAP_VERTICAL_STRETCH) * adjustedPy))
-    self.playerMarker:Show()
+    self.playerArrow:SetPoint("CENTER", self.canvas, "TOPLEFT", (w * MAP_HORIZONTAL_STRETCH) * adjustedPx, -((h * MAP_VERTICAL_STRETCH) * adjustedPy))
+    self.playerArrow:Show()
 end
 
 function UI:EnsureGridLines()
