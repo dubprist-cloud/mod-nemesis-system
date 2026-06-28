@@ -338,7 +338,7 @@ namespace
             if (creature->HasAura(auraSpell))
                 continue;
 
-            creature->CastSpell(creature, auraSpell, TRIGGERED_FULL_MASK);
+            creature->AddAura(auraSpell, creature);
         }
     }
 
