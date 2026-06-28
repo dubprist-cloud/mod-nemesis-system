@@ -1804,46 +1804,28 @@ namespace
         if (ShouldAnnounceCreate() && state.rank >= GetAnnounceMinRank())
         {
             bool const reachedRankFive = existed && previousRank < 5 && state.rank >= 5;
-            std::string const creatureName = killer->GetName();
-<<<<<<< HEAD
+            uint32 const creatureEntry = killer->GetEntry();
             uint32 const zoneId = killer->GetZoneId();
-=======
-            std::string const zoneName = GetZoneName(killer->GetZoneId());
->>>>>>> 717c1a0cb084896bb4f6df2be01c2930deae9d1e
             uint8 const rank = state.rank;
             uint32 const affixMask = state.affixMask;
 
             if (existed)
             {
                 BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_RANK_UP,
-<<<<<<< HEAD
-                    [creatureName, rank, zoneId, affixMask](LocaleConstant locale)
+                    [creatureEntry, rank, zoneId, affixMask](LocaleConstant locale)
                     {
                         return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_RANK_UP),
-                            creatureName, rank, GetZoneName(zoneId, locale), GetAffixList(affixMask, locale));
-=======
-                    [creatureName, rank, zoneName, affixMask](LocaleConstant locale)
-                    {
-                        return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_RANK_UP),
-                            creatureName, rank, zoneName, GetAffixList(affixMask, locale));
->>>>>>> 717c1a0cb084896bb4f6df2be01c2930deae9d1e
+                            GetLocaleAwareCreatureName(creatureEntry, locale), rank, GetZoneName(zoneId, locale), GetAffixList(affixMask, locale));
                     }, reachedRankFive);
             }
             else
             {
                 std::string const playerName = killed->GetName();
                 BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_CREATED,
-<<<<<<< HEAD
-                    [creatureName, playerName, zoneId, affixMask](LocaleConstant locale)
+                    [creatureEntry, playerName, zoneId, affixMask](LocaleConstant locale)
                     {
                         return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_CREATED),
-                            creatureName, playerName, GetZoneName(zoneId, locale), GetAffixList(affixMask, locale));
-=======
-                    [creatureName, playerName, zoneName, affixMask](LocaleConstant locale)
-                    {
-                        return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_CREATED),
-                            creatureName, playerName, zoneName, GetAffixList(affixMask, locale));
->>>>>>> 717c1a0cb084896bb4f6df2be01c2930deae9d1e
+                            GetLocaleAwareCreatureName(creatureEntry, locale), playerName, GetZoneName(zoneId, locale), GetAffixList(affixMask, locale));
                     }, reachedRankFive);
             }
         }
@@ -1884,27 +1866,16 @@ public:
         if (ShouldAnnounceKill() && state.rank >= GetAnnounceMinRank())
         {
             std::string const playerName = killer->GetName();
-            std::string const creatureName = killed->GetName();
+            uint32 const creatureEntry = killed->GetEntry();
             uint8 const rank = state.rank;
-<<<<<<< HEAD
             uint32 const zoneId = killed->GetZoneId();
             NemesisStringId const announceId = revenge ? NemesisStringId::ANNOUNCE_REVENGE : NemesisStringId::ANNOUNCE_BOUNTY;
 
             BroadcastNemesisLocalized(killed, announceId,
-                [playerName, creatureName, rank, zoneId, announceId](LocaleConstant locale)
+                [playerName, creatureEntry, rank, zoneId, announceId](LocaleConstant locale)
                 {
                     return Acore::StringFormat(GetNemesisString(locale, announceId),
-                        playerName, creatureName, rank, GetZoneName(zoneId, locale));
-=======
-            std::string const zoneName = GetZoneName(killed->GetZoneId());
-            NemesisStringId const announceId = revenge ? NemesisStringId::ANNOUNCE_REVENGE : NemesisStringId::ANNOUNCE_BOUNTY;
-
-            BroadcastNemesisLocalized(killed, announceId,
-                [playerName, creatureName, rank, zoneName, announceId](LocaleConstant locale)
-                {
-                    return Acore::StringFormat(GetNemesisString(locale, announceId),
-                        playerName, creatureName, rank, zoneName);
->>>>>>> 717c1a0cb084896bb4f6df2be01c2930deae9d1e
+                        playerName, GetLocaleAwareCreatureName(creatureEntry, locale), rank, GetZoneName(zoneId, locale));
                 });
         }
     }

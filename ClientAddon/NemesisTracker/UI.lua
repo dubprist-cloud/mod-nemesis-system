@@ -5,9 +5,9 @@ NT.UI = NT.UI or {}
 local UI = NT.UI
 local L = NT.L
 
-local DEFAULT_ROW_HEIGHT = 22
-local COMPACT_ROW_HEIGHT = 18
-local MAX_ROW_COUNT = 24
+local DEFAULT_ROW_HEIGHT = 40
+local COMPACT_ROW_HEIGHT = 32
+local MAX_ROW_COUNT = 10
 local FILTERS = {
     { key = "all", label = L["All"] },
     { key = "own", label = L["Own"] },
@@ -648,22 +648,22 @@ function UI:CreateRow(parent, index)
     row:SetBackdropColor(0.08, 0.08, 0.08, 0.75)
 
     row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    row.name:SetPoint("LEFT", row, "LEFT", 6, 0)
-    row.name:SetWidth(92)
+    row.name:SetPoint("LEFT", row, "LEFT", 6, 10)
+    row.name:SetWidth(200)
     row.name:SetJustifyH("LEFT")
 
     row.rank = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    row.rank:SetPoint("LEFT", row.name, "RIGHT", 4, 0)
+    row.rank:SetPoint("RIGHT", row, "RIGHT", -6, 10)
     row.rank:SetWidth(28)
 
     row.zone = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.zone:SetPoint("LEFT", row.rank, "RIGHT", 4, 0)
-    row.zone:SetWidth(64)
+    row.zone:SetPoint("LEFT", row, "LEFT", 6, -10)
+    row.zone:SetWidth(180)
     row.zone:SetJustifyH("LEFT")
 
     row.lastSeen = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.lastSeen:SetPoint("RIGHT", row, "RIGHT", -6, 0)
-    row.lastSeen:SetWidth(46)
+    row.lastSeen:SetPoint("RIGHT", row, "RIGHT", -6, -10)
+    row.lastSeen:SetWidth(60)
     row.lastSeen:SetJustifyH("RIGHT")
 
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")

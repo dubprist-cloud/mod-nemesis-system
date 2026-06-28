@@ -155,11 +155,7 @@ function NT:GetSelectedNemesis()
 end
 
 function NT:GetVisibleRows()
-    if self.db and self.db.compactList then
-        return 24
-    end
-
-    return 18
+    return 10
 end
 
 function NT:GetMaxPage()
