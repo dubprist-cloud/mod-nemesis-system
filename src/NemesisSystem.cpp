@@ -19,6 +19,8 @@
 #include "WorldPacket.h"
 #include "WorldSessionMgr.h"
 
+#include "NemesisSystemLocale.h"
+
 #ifdef MOD_PLAYERBOTS
 #include "PlayerbotMgr.h"
 #endif
@@ -496,12 +498,12 @@ namespace
         return std::clamp(sConfigMgr->GetOption<float>("NemesisSystem.RegenerationHealthPct", 3.0f), 0.1f, 100.0f);
     }
 
-    std::string GetAffixList(uint32 affixMask)
+    std::string GetAffixList(uint32 affixMask, LocaleConstant locale = LOCALE_enUS)
     {
         std::ostringstream stream;
         bool first = true;
 
-        auto append = [&](char const* name)
+        auto append = [&](std::string_view name)
         {
             if (!first)
                 stream << ", ";
@@ -511,28 +513,28 @@ namespace
         };
 
         if (affixMask & NEMESIS_AFFIX_VAMPIRIC)
-            append("Vampiric");
+            append(GetNemesisString(locale, NemesisStringId::AFFIX_VAMPIRIC));
 
         if (affixMask & NEMESIS_AFFIX_SWIFT)
-            append("Swift");
+            append(GetNemesisString(locale, NemesisStringId::AFFIX_SWIFT));
 
         if (affixMask & NEMESIS_AFFIX_JUGGERNAUT)
-            append("Juggernaut");
+            append(GetNemesisString(locale, NemesisStringId::AFFIX_JUGGERNAUT));
 
         if (affixMask & NEMESIS_AFFIX_SAVAGE)
-            append("Savage");
+            append(GetNemesisString(locale, NemesisStringId::AFFIX_SAVAGE));
 
         if (affixMask & NEMESIS_AFFIX_SPELLWARD)
-            append("Spellward");
+            append(GetNemesisString(locale, NemesisStringId::AFFIX_SPELLWARD));
 
         if (affixMask & NEMESIS_AFFIX_ENRAGED)
-            append("Enraged");
+            append(GetNemesisString(locale, NemesisStringId::AFFIX_ENRAGED));
 
         if (affixMask & NEMESIS_AFFIX_REGEN)
-            append("Regenerating");
+            append(GetNemesisString(locale, NemesisStringId::AFFIX_REGEN));
 
         if (first)
-            return "None";
+            return std::string(GetNemesisString(locale, NemesisStringId::AFFIX_NONE));
 
         return stream.str();
     }
@@ -968,23 +970,45 @@ namespace
         return Acore::StringFormat("{:.1f}, {:.1f}, {:.1f}", creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
     }
 
-    void BroadcastNemesisMessage(Creature* creature, std::string const& message, bool serverWide = false)
+    void BroadcastNemesisLocalized(Creature* creature, NemesisStringId msgId,
+        std::function<std::string(LocaleConstant)> formatFn, bool serverWide = false)
     {
+        auto sendToPlayer = [&](Player* player)
+        {
+            if (!player || !player->GetSession())
+                return;
+
+            LocaleConstant const locale = player->GetSession()->GetSessionDbcLocale();
+            std::string const message = formatFn(locale);
+            ChatHandler(player->GetSession()).SendSysMessage(message.c_str());
+        };
+
         if (serverWide)
         {
-            sWorldSessionMgr->SendServerMessage(SERVER_MSG_STRING, message);
+            ForEachOnlinePlayer(sendToPlayer);
             return;
         }
 
         if (creature)
             if (Map* map = creature->GetMap())
-                if (uint32 zoneId = creature->GetZoneId())
+            {
+                uint32 const zoneId = creature->GetZoneId();
+                if (!zoneId)
                 {
-                    map->SendZoneText(zoneId, message.c_str());
+                    ForEachOnlinePlayer(sendToPlayer);
                     return;
                 }
 
-        sWorldSessionMgr->SendServerMessage(SERVER_MSG_STRING, message);
+                ForEachOnlinePlayer([&](Player* player)
+                {
+                    if (player->GetMap() == map && player->GetZoneId() == zoneId)
+                        sendToPlayer(player);
+                });
+
+                return;
+            }
+
+        ForEachOnlinePlayer(sendToPlayer);
     }
 
     Creature* FindLoadedCreatureBySpawnId(Map* map, ObjectGuid::LowType spawnId)
@@ -1708,10 +1732,30 @@ namespace
         if (ShouldAnnounceCreate() && state.rank >= GetAnnounceMinRank())
         {
             bool const reachedRankFive = existed && previousRank < 5 && state.rank >= 5;
-            std::string message = existed
-                ? Acore::StringFormat("[Nemesis]: {} has reached rank {} at ({}). Affixes: {}.", killer->GetName(), state.rank, GetNemesisCoordinates(killer), GetAffixList(state.affixMask))
-                : Acore::StringFormat("[Nemesis]: {} has become a nemesis after slaying {} at ({}). Affixes: {}.", killer->GetName(), killed->GetName(), GetNemesisCoordinates(killer), GetAffixList(state.affixMask));
-            BroadcastNemesisMessage(killer, message, reachedRankFive);
+            std::string const creatureName = killer->GetName();
+            std::string const coords = GetNemesisCoordinates(killer);
+            uint8 const rank = state.rank;
+            uint32 const affixMask = state.affixMask;
+
+            if (existed)
+            {
+                BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_RANK_UP,
+                    [creatureName, rank, coords, affixMask](LocaleConstant locale)
+                    {
+                        return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_RANK_UP),
+                            creatureName, rank, coords, GetAffixList(affixMask, locale));
+                    }, reachedRankFive);
+            }
+            else
+            {
+                std::string const playerName = killed->GetName();
+                BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_CREATED,
+                    [creatureName, playerName, coords, affixMask](LocaleConstant locale)
+                    {
+                        return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_CREATED),
+                            creatureName, playerName, coords, GetAffixList(affixMask, locale));
+                    }, reachedRankFive);
+            }
         }
     }
 }
@@ -1749,10 +1793,18 @@ public:
 
         if (ShouldAnnounceKill() && state.rank >= GetAnnounceMinRank())
         {
-            std::string message = revenge
-                ? Acore::StringFormat("[Nemesis]: {} claimed revenge on {} at rank {} near ({}).", killer->GetName(), killed->GetName(), state.rank, GetNemesisCoordinates(killed))
-                : Acore::StringFormat("[Nemesis]: {} claimed the bounty on {} at rank {} near ({}).", killer->GetName(), killed->GetName(), state.rank, GetNemesisCoordinates(killed));
-            BroadcastNemesisMessage(killed, message);
+            std::string const playerName = killer->GetName();
+            std::string const creatureName = killed->GetName();
+            uint8 const rank = state.rank;
+            std::string const coords = GetNemesisCoordinates(killed);
+            NemesisStringId const announceId = revenge ? NemesisStringId::ANNOUNCE_REVENGE : NemesisStringId::ANNOUNCE_BOUNTY;
+
+            BroadcastNemesisLocalized(killed, announceId,
+                [playerName, creatureName, rank, coords, announceId](LocaleConstant locale)
+                {
+                    return Acore::StringFormat(GetNemesisString(locale, announceId),
+                        playerName, creatureName, rank, coords);
+                });
         }
     }
 
@@ -1922,12 +1974,17 @@ public:
         return commandTable;
     }
 
+    static LocaleConstant GetHandlerLocale(ChatHandler* handler)
+    {
+        return handler->GetSession() ? handler->GetSession()->GetSessionDbcLocale() : LOCALE_enUS;
+    }
+
     static bool HandleAddonBootstrap(ChatHandler* handler)
     {
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         if (!player)
         {
-            handler->PSendSysMessage("You must be logged in as a player to request addon bootstrap data.");
+            handler->PSendSysMessage(GetNemesisString(GetHandlerLocale(handler), NemesisStringId::CMD_NEED_PLAYER_BOOTSTRAP).data());
             return true;
         }
 
@@ -1940,7 +1997,7 @@ public:
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         if (!player)
         {
-            handler->PSendSysMessage("You must be logged in as a player to report addon sightings.");
+            handler->PSendSysMessage(GetNemesisString(GetHandlerLocale(handler), NemesisStringId::CMD_NEED_PLAYER_REPORT).data());
             return true;
         }
 
@@ -1983,7 +2040,7 @@ public:
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         if (!player)
         {
-            handler->PSendSysMessage("You must be logged in as a player to sync addon data.");
+            handler->PSendSysMessage(GetNemesisString(GetHandlerLocale(handler), NemesisStringId::CMD_NEED_PLAYER_SYNC).data());
             return true;
         }
 
@@ -1993,37 +2050,40 @@ public:
 
     static bool HandleDebug(ChatHandler* handler)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
+
         Creature* target = handler->getSelectedCreature();
         if (!target)
         {
-            handler->PSendSysMessage("You must select a creature.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_SELECT_CREATURE).data());
             return true;
         }
 
-        handler->PSendSysMessage("Nemesis target: {} (entry {}, spawn {}, map {})", target->GetName(), target->GetEntry(), uint64(target->GetSpawnId()), target->GetMapId());
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_DEBUG_HEADER).data(), target->GetName(), target->GetEntry(), uint64(target->GetSpawnId()), target->GetMapId());
 
         NemesisState state;
         if (!TryGetNemesisState(target, state))
         {
-            handler->PSendSysMessage("Selected creature is not an active nemesis.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_NOT_A_NEMESIS).data());
             return true;
         }
 
-        handler->PSendSysMessage("Rank {} | Affixes {} | TargetGuid {}", state.rank, GetAffixList(state.affixMask), state.targetGuid);
-        handler->PSendSysMessage("Health {} / {} | Scale {}", target->GetHealth(), target->GetMaxHealth(), target->GetObjectScale());
-        handler->PSendSysMessage("Main damage {} - {}", target->GetWeaponDamageRange(BASE_ATTACK, MINDAMAGE), target->GetWeaponDamageRange(BASE_ATTACK, MAXDAMAGE));
-        handler->PSendSysMessage("Rank-up cooldown remaining {}s | Same victim cooldown remaining {}s", GetRankUpCooldownRemaining(state), GetSameVictimCooldownRemaining(state, state.targetGuid));
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_DEBUG_RANK).data(), state.rank, GetAffixList(state.affixMask, locale), state.targetGuid);
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_DEBUG_HEALTH).data(), target->GetHealth(), target->GetMaxHealth(), target->GetObjectScale());
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_DEBUG_DAMAGE).data(), target->GetWeaponDamageRange(BASE_ATTACK, MINDAMAGE), target->GetWeaponDamageRange(BASE_ATTACK, MAXDAMAGE));
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_DEBUG_COOLDOWN).data(), GetRankUpCooldownRemaining(state), GetSameVictimCooldownRemaining(state, state.targetGuid));
         return true;
     }
 
     static bool HandleInfo(ChatHandler* handler, uint64 rawSpawnId)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
         ObjectGuid::LowType const spawnId = ObjectGuid::LowType(rawSpawnId);
 
         NemesisState state;
         if (!TryGetNemesisState(spawnId, state))
         {
-            handler->PSendSysMessage("Spawn {} is not an active nemesis.", rawSpawnId);
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_INFO_NOT_NEMESIS).data(), rawSpawnId);
             return true;
         }
 
@@ -2035,24 +2095,25 @@ public:
         Creature* liveCreature = FindLoadedCreatureBySpawnId(map, spawnId);
         std::string name = GetNemesisDisplayName(map, spawnId, state);
 
-        handler->PSendSysMessage("Spawn {} | {} | Entry {} | Map {}", rawSpawnId, name, state.creatureEntry, state.mapId);
-        handler->PSendSysMessage("Rank {} | Affixes {} | Target {}", state.rank, GetAffixList(state.affixMask), state.targetGuid);
-        handler->PSendSysMessage("Rank-up cooldown remaining {}s | Same victim cooldown remaining {}s", GetRankUpCooldownRemaining(state), GetSameVictimCooldownRemaining(state, state.targetGuid));
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_INFO_HEADER).data(), rawSpawnId, name, state.creatureEntry, state.mapId);
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_INFO_RANK).data(), state.rank, GetAffixList(state.affixMask, locale), state.targetGuid);
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_INFO_COOLDOWN).data(), GetRankUpCooldownRemaining(state), GetSameVictimCooldownRemaining(state, state.targetGuid));
         if (liveCreature)
-            handler->PSendSysMessage("Loaded now | HP {}/{} | Scale {}", liveCreature->GetHealth(), liveCreature->GetMaxHealth(), liveCreature->GetObjectScale());
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_INFO_LOADED).data(), liveCreature->GetHealth(), liveCreature->GetMaxHealth(), liveCreature->GetObjectScale());
         else
-            handler->PSendSysMessage("Not currently loaded on your map.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_INFO_NOT_LOADED).data());
 
         return true;
     }
 
     static bool HandleMark(ChatHandler* handler, Optional<uint8> rankArg)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
         Creature* target = handler->getSelectedCreature();
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         if (!target || !player)
         {
-            handler->PSendSysMessage("You must select a creature while logged in as a player.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_MARK_NEED_BOTH).data());
             return true;
         }
 
@@ -2074,45 +2135,47 @@ public:
         ApplyNemesisState(target, state);
         target->SetFullHealth();
         BroadcastRankFiveNemesisIfPersistent(target, state);
-        handler->PSendSysMessage("Marked {} as nemesis rank {} with affixes {}.", target->GetName(), state.rank, GetAffixList(state.affixMask));
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_MARK_DONE).data(), target->GetName(), state.rank, GetAffixList(state.affixMask, locale));
         return true;
     }
 
     static bool HandleClear(ChatHandler* handler)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
         Creature* target = handler->getSelectedCreature();
         if (!target)
         {
-            handler->PSendSysMessage("You must select a creature.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_CLEAR_SELECT).data());
             return true;
         }
 
         NemesisState state;
         if (!TryGetNemesisState(target, state))
         {
-            handler->PSendSysMessage("Selected creature is not an active nemesis.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_CLEAR_NOT_NEMESIS).data());
             return true;
         }
 
         ResetCreatureToBaseState(target, state);
         DeleteNemesisState(target);
-        handler->PSendSysMessage("Cleared nemesis state from {}.", target->GetName());
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_CLEAR_DONE).data(), target->GetName());
         return true;
     }
 
     static bool HandleReroll(ChatHandler* handler)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
         Creature* target = handler->getSelectedCreature();
         if (!target)
         {
-            handler->PSendSysMessage("You must select a creature.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_REROLL_SELECT).data());
             return true;
         }
 
         NemesisState state;
         if (!TryGetNemesisState(target, state))
         {
-            handler->PSendSysMessage("Selected creature is not an active nemesis.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_REROLL_NOT_NEMESIS).data());
             return true;
         }
 
@@ -2121,28 +2184,29 @@ public:
         state.lastSeenAt = uint32(GameTime::GetGameTime().count());
         SaveNemesisState(target, state);
         ApplyNemesisState(target, state);
-        handler->PSendSysMessage("Rerolled affixes for {}: {}.", target->GetName(), GetAffixList(state.affixMask));
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_REROLL_DONE).data(), target->GetName(), GetAffixList(state.affixMask, locale));
         return true;
     }
 
     static bool HandleList(ChatHandler* handler)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         if (!player)
         {
-            handler->PSendSysMessage("You must be logged in as a player to list map nemeses.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_LIST_NEED_PLAYER).data());
             return true;
         }
 
         Map* map = player->GetMap();
         if (!map)
         {
-            handler->PSendSysMessage("Unable to resolve your current map.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_LIST_NO_MAP).data());
             return true;
         }
 
         uint32 count = 0;
-        handler->PSendSysMessage("Active nemeses on map {}:", map->GetId());
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_LIST_HEADER).data(), map->GetId());
 
         std::vector<std::pair<ObjectGuid::LowType, NemesisState>> persistentNemeses;
         std::vector<std::pair<ObjectGuid, NemesisState>> temporaryNemeses;
@@ -2165,11 +2229,11 @@ public:
             Creature* liveCreature = FindLoadedCreatureBySpawnId(map, spawnId);
             std::string name = GetNemesisDisplayName(map, spawnId, state);
 
-            handler->PSendSysMessage("Spawn {} | {} | Rank {} | Affixes {} | Target {}{}",
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_LIST_ENTRY).data(),
                 uint64(spawnId),
                 name,
                 state.rank,
-                GetAffixList(state.affixMask),
+                GetAffixList(state.affixMask, locale),
                 state.targetGuid,
                 liveCreature ? Acore::StringFormat(" | HP {}/{}", liveCreature->GetHealth(), liveCreature->GetMaxHealth()) : "");
             ++count;
@@ -2181,11 +2245,11 @@ public:
             if (!liveCreature)
                 continue;
 
-            handler->PSendSysMessage("Temporary {} | {} | Rank {} | Affixes {} | Target {} | HP {}/{}",
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_LIST_TEMP_ENTRY).data(),
                 guid.GetCounter(),
                 liveCreature->GetName(),
                 state.rank,
-                GetAffixList(state.affixMask),
+                GetAffixList(state.affixMask, locale),
                 state.targetGuid,
                 liveCreature->GetHealth(),
                 liveCreature->GetMaxHealth());
@@ -2193,26 +2257,27 @@ public:
         }
 
         if (!count)
-            handler->PSendSysMessage("No active nemeses found on this map.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_LIST_NONE).data());
         else
-            handler->PSendSysMessage("Total active nemeses on this map: {}.", count);
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_LIST_TOTAL).data(), count);
 
         return true;
     }
 
     static bool HandleMapClear(ChatHandler* handler)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         if (!player)
         {
-            handler->PSendSysMessage("You must be logged in as a player to clear map nemeses.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_MAPCLEAR_NEED_PLAYER).data());
             return true;
         }
 
         Map* map = player->GetMap();
         if (!map)
         {
-            handler->PSendSysMessage("Unable to resolve your current map.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_MAPCLEAR_NO_MAP).data());
             return true;
         }
 
@@ -2234,7 +2299,7 @@ public:
 
         if (spawnIds.empty())
         {
-            handler->PSendSysMessage("No active nemeses found on this map.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_MAPCLEAR_NONE).data());
             return true;
         }
 
@@ -2261,7 +2326,7 @@ public:
                 DeleteNemesisState(liveCreature);
             }
 
-        handler->PSendSysMessage("Cleared {} active nemesis record(s) from map {}.", spawnIds.size() + temporaryGuids.size(), map->GetId());
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_MAPCLEAR_DONE).data(), spawnIds.size() + temporaryGuids.size(), map->GetId());
         return true;
     }
 
@@ -2277,18 +2342,19 @@ public:
             TemporaryRegenTickAccumulators.clear();
         }
         CharacterDatabase.Execute("DELETE FROM `character_nemesis`");
-        handler->PSendSysMessage("Cleared all stored nemesis records.");
+        handler->PSendSysMessage(GetNemesisString(GetHandlerLocale(handler), NemesisStringId::CMD_CLEARALL_DONE).data());
         return true;
     }
     static bool HandleReload(ChatHandler* handler)
     {
+        LocaleConstant const locale = GetHandlerLocale(handler);
         if (!sConfigMgr->LoadModulesConfigs(true, false))
         {
-            handler->PSendSysMessage("Nemesis System configuration reload failed.");
+            handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_RELOAD_FAIL).data());
             return true;
         }
 
-        handler->PSendSysMessage("Nemesis System configuration reloaded.");
+        handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_RELOAD_DONE).data());
         return true;
     }
 };

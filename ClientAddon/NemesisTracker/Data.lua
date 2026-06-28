@@ -174,7 +174,7 @@ function NT:GetAvailableZones()
                 seen[key] = true
                 table.insert(zones, {
                     zoneId = nemesis.zoneId,
-                    zoneName = nemesis.zoneName or "Unknown",
+                    zoneName = nemesis.zoneName or NT.L["Unknown"],
                     zoneKey = key,
                 })
             end
@@ -392,3 +392,4 @@ function NT:GetPeerSyncCandidates()
 
     return candidates
 end
+

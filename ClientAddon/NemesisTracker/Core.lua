@@ -4,6 +4,7 @@ local existingNamespace = NemesisTracker or {}
 
 NemesisTracker = LibStub("AceAddon-3.0"):NewAddon("NemesisTracker", "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0", "AceComm-3.0")
 local NT = NemesisTracker
+NT.L = LibStub("AceLocale-3.0"):GetLocale("NemesisTracker")
 
 NT.MapData = existingNamespace.MapData or NT.MapData or {}
 NT.UI = existingNamespace.UI or NT.UI or {}
@@ -33,3 +34,4 @@ NT.data = NT.data or {
     filteredCount = 0,
     lastReportBySpawnId = {},
 }
+

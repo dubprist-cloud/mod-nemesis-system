@@ -39,7 +39,7 @@ function NT:InitializeDatabase()
     local defaults = {
         profile = {
             window = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 0, width = 980, height = 640 },
-            compactList = false,
+            compactList = true,
             syncScope = "GUILD",
             publicChannelName = "NemesisTracker",
             fadeAfterSeconds = 600,
@@ -90,6 +90,8 @@ function NT:RefreshVisibleUI()
         self.UI:RefreshList()
         self.UI:RefreshDetails()
         self.UI:RefreshMap()
+        self.UI:RefreshPlayerMarker()
+        self.UI:RefreshGrid()
     end
 end
 
@@ -118,6 +120,7 @@ function NT:OnInitialize()
 
     if self.UI then
         self.UI:Create()
+        self.UI:CreateMinimapButton()
         self.UI:RefreshAll()
     end
 
