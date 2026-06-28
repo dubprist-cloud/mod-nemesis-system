@@ -121,6 +121,58 @@ namespace
     std::recursive_mutex NemesisStoreMutex;
     bool CacheLoaded = false;
 
+    using OriginalNameStore = std::unordered_map<ObjectGuid::LowType, std::string>;
+    using TemporaryOriginalNameStore = std::unordered_map<ObjectGuid, std::string>;
+    OriginalNameStore NemesisOriginalNames;
+    TemporaryOriginalNameStore TemporaryNemesisOriginalNames;
+    std::recursive_mutex NemesisNameMutex;
+
+    void ApplyNemesisTooltipName(Creature* creature, uint8 rank, std::string_view tierLabel)
+    {
+        if (!creature)
+            return;
+
+        std::string const originalName = creature->GetName();
+        std::string const nemesisName = Acore::StringFormat("{} <{}>", originalName, tierLabel);
+
+        creature->SetName(nemesisName.c_str());
+
+        std::lock_guard<std::recursive_mutex> lock(NemesisNameMutex);
+        if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
+            NemesisOriginalNames[spawnId] = originalName;
+        else
+            TemporaryNemesisOriginalNames[creature->GetGUID()] = originalName;
+    }
+
+    void RestoreNemesisTooltipName(Creature* creature)
+    {
+        if (!creature)
+            return;
+
+        std::string originalName;
+        {
+            std::lock_guard<std::recursive_mutex> lock(NemesisNameMutex);
+            if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
+            {
+                OriginalNameStore::iterator itr = NemesisOriginalNames.find(spawnId);
+                if (itr == NemesisOriginalNames.end())
+                    return;
+                originalName = itr->second;
+                NemesisOriginalNames.erase(itr);
+            }
+            else
+            {
+                TemporaryOriginalNameStore::iterator itr = TemporaryNemesisOriginalNames.find(creature->GetGUID());
+                if (itr == TemporaryNemesisOriginalNames.end())
+                    return;
+                originalName = itr->second;
+                TemporaryNemesisOriginalNames.erase(itr);
+            }
+        }
+
+        creature->SetName(originalName.c_str());
+    }
+
     std::string constexpr NEMESIS_ADDON_PREFIX = "Nemesis";
     size_t constexpr NEMESIS_ADDON_CHUNK_SIZE = 220;
     std::array<uint32, 5> constexpr NEMESIS_DEFAULT_VISUAL_AURA_SPELLS =
@@ -1393,6 +1445,7 @@ namespace
         ApplyJuggernautImmunity(creature, false);
 
         RemoveNemesisVisualAuras(creature);
+        RestoreNemesisTooltipName(creature);
 
         creature->UpdateAllStats();
 
@@ -1686,6 +1739,7 @@ namespace
             creature->SetHealth(std::min<uint32>(creature->GetHealth(), scaledHealth));
 
         ApplyNemesisVisualAuras(creature, state.rank);
+        ApplyNemesisTooltipName(creature, state.rank, GetRankTierLabel(state.rank));
     }
 
     bool IsBelowEnrageThreshold(Creature* creature)
@@ -1733,27 +1787,27 @@ namespace
         {
             bool const reachedRankFive = existed && previousRank < 5 && state.rank >= 5;
             std::string const creatureName = killer->GetName();
-            std::string const coords = GetNemesisCoordinates(killer);
+            std::string const zoneName = GetZoneName(killer->GetZoneId());
             uint8 const rank = state.rank;
             uint32 const affixMask = state.affixMask;
 
             if (existed)
             {
                 BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_RANK_UP,
-                    [creatureName, rank, coords, affixMask](LocaleConstant locale)
+                    [creatureName, rank, zoneName, affixMask](LocaleConstant locale)
                     {
                         return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_RANK_UP),
-                            creatureName, rank, coords, GetAffixList(affixMask, locale));
+                            creatureName, rank, zoneName, GetAffixList(affixMask, locale));
                     }, reachedRankFive);
             }
             else
             {
                 std::string const playerName = killed->GetName();
                 BroadcastNemesisLocalized(killer, NemesisStringId::ANNOUNCE_CREATED,
-                    [creatureName, playerName, coords, affixMask](LocaleConstant locale)
+                    [creatureName, playerName, zoneName, affixMask](LocaleConstant locale)
                     {
                         return Acore::StringFormat(GetNemesisString(locale, NemesisStringId::ANNOUNCE_CREATED),
-                            creatureName, playerName, coords, GetAffixList(affixMask, locale));
+                            creatureName, playerName, zoneName, GetAffixList(affixMask, locale));
                     }, reachedRankFive);
             }
         }
@@ -1796,14 +1850,14 @@ public:
             std::string const playerName = killer->GetName();
             std::string const creatureName = killed->GetName();
             uint8 const rank = state.rank;
-            std::string const coords = GetNemesisCoordinates(killed);
+            std::string const zoneName = GetZoneName(killed->GetZoneId());
             NemesisStringId const announceId = revenge ? NemesisStringId::ANNOUNCE_REVENGE : NemesisStringId::ANNOUNCE_BOUNTY;
 
             BroadcastNemesisLocalized(killed, announceId,
-                [playerName, creatureName, rank, coords, announceId](LocaleConstant locale)
+                [playerName, creatureName, rank, zoneName, announceId](LocaleConstant locale)
                 {
                     return Acore::StringFormat(GetNemesisString(locale, announceId),
-                        playerName, creatureName, rank, coords);
+                        playerName, creatureName, rank, zoneName);
                 });
         }
     }
@@ -1859,7 +1913,11 @@ public:
             return;
 
         if (creature->IsAlive())
+        {
+            // Re-apply visual auras in case they were removed by combat exit / evade / reset
+            ApplyNemesisVisualAuras(creature, state.rank);
             return;
+        }
 
         EraseRegenAccumulator(creature);
         DeleteNemesisState(creature, "dead");
