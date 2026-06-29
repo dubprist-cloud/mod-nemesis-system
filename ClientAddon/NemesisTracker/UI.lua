@@ -166,7 +166,7 @@ end
 
 local function getDisplayedZoneCount(zoneId, zoneName, zoneMapKey)
     local count = 0
-    for _, nemesis in ipairs(NT.data.ordered) do
+    for _, nemesis in ipairs(NT:GetMapNemeses()) do
         if isNemesisInZone(nemesis, zoneId, zoneName, zoneMapKey) then
             count = count + 1
         end
@@ -418,7 +418,7 @@ function UI:RefreshMap()
         marker:Hide()
     end
 
-    for _, nemesis in ipairs(NT.data.ordered) do
+    for _, nemesis in ipairs(NT:GetMapNemeses()) do
         if isNemesisInZone(nemesis, displayedZoneId, displayedZoneName, displayedZoneKey) then
             local spawnId = nemesis.spawnId
             if spawnId then
@@ -460,12 +460,20 @@ function UI:RefreshMap()
                 marker:ClearAllPoints()
                 marker:SetPoint("CENTER", self.canvas, "TOPLEFT", (width * MAP_HORIZONTAL_STRETCH) * x, -((height * MAP_VERTICAL_STRETCH) * y))
                 marker:Show()
-                marker:SetAlpha(NT:GetVisibilityAlpha(nemesis))
+                marker:SetAlpha(NT:GetMapVisibilityAlpha(nemesis))
 
                 marker.texture:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcon_8")
                 local r, g, b = rankColor(nemesis.rank or 1)
-                marker.texture:SetVertexColor(r, g, b)
-                marker:SetScale(1.0)
+                local isGhost = NT:IsGhostNemesis(nemesis)
+                if isGhost then
+                    marker.texture:SetVertexColor(r * 0.6, g * 0.6, b * 0.6)
+                    marker.texture:SetDesaturated(true)
+                    marker:SetScale(0.85)
+                else
+                    marker.texture:SetVertexColor(r, g, b)
+                    marker.texture:SetDesaturated(false)
+                    marker:SetScale(1.0)
+                end
             end
         end
     end

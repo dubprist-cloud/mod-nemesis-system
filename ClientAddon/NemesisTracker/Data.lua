@@ -12,8 +12,52 @@ local function zoneKey(zoneId, zoneName)
     return string.format("%s:%s", tostring(zoneId or 0), zoneName or "")
 end
 
+local MAP_DISPLAY_MAX_AGE = 3600
+
+local function isTooOld(nemesis)
+    local age = NT:GetAge(nemesis.lastSeenAt or nemesis.createdAt or 0)
+    return age >= MAP_DISPLAY_MAX_AGE
+end
+
 local function shouldIncludeNemesis(nemesis)
     if not nemesis or NT:ShouldHideNemesis(nemesis) then
+        return false
+    end
+
+    if isTooOld(nemesis) then
+        return false
+    end
+
+    local filter = NT.data.currentFilter or "all"
+    if filter ~= "all" and nemesis.relation ~= filter then
+        return false
+    end
+
+    local search = string.lower(NT.data.currentSearch or "")
+    if search ~= "" then
+        local name = string.lower(nemesis.name or "")
+        local zone = string.lower(nemesis.zoneName or "")
+        local rankTier = string.lower(nemesis.rankTier or "")
+        if not string.find(name, search, 1, true) and
+            not string.find(zone, search, 1, true) and
+            not string.find(rankTier, search, 1, true) then
+            return false
+        end
+    end
+
+    if (NT.data.currentScope or "all") == "zone" then
+        return nemesis.zoneKey and nemesis.zoneKey == NT.data.displayedZoneKey
+    end
+
+    return true
+end
+
+local function shouldIncludeNemesisOnMap(nemesis)
+    if not nemesis then
+        return false
+    end
+
+    if isTooOld(nemesis) then
         return false
     end
 
@@ -99,6 +143,18 @@ function NT:GetVisibilityAlpha(nemesis)
     end
 
     return 1.0
+end
+
+function NT:IsGhostNemesis(nemesis)
+    return self:GetStalenessState(nemesis) == "hidden"
+end
+
+function NT:GetMapVisibilityAlpha(nemesis)
+    if self:IsGhostNemesis(nemesis) then
+        return 0.22
+    end
+
+    return self:GetVisibilityAlpha(nemesis)
 end
 
 function NT:ShouldHideNemesis(nemesis)
@@ -409,5 +465,38 @@ function NT:GetPeerSyncCandidates()
     end
 
     return candidates
+end
+
+function NT:GetMapNemeses()
+    local entries = {}
+    for _, nemesis in pairs(self.data.nemeses) do
+        if shouldIncludeNemesisOnMap(nemesis) then
+            table.insert(entries, nemesis)
+        end
+    end
+
+    table.sort(entries, function(a, b)
+        local aGhost = self:IsGhostNemesis(a)
+        local bGhost = self:IsGhostNemesis(b)
+        if aGhost ~= bGhost then
+            return not aGhost
+        end
+
+        if a.relation ~= b.relation then
+            return (self.relationOrder[a.relation] or 99) < (self.relationOrder[b.relation] or 99)
+        end
+
+        if (a.rank or 1) ~= (b.rank or 1) then
+            return (a.rank or 1) > (b.rank or 1)
+        end
+
+        if (a.lastSeenAt or 0) ~= (b.lastSeenAt or 0) then
+            return (a.lastSeenAt or 0) > (b.lastSeenAt or 0)
+        end
+
+        return (a.name or "") < (b.name or "")
+    end)
+
+    return entries
 end
 

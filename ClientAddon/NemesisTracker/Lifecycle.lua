@@ -143,31 +143,6 @@ function NT:OnEnable()
     self:RegisterEvent("CHAT_MSG_ADDON")
     self.refreshTimer = self:ScheduleRepeatingTimer("RefreshVisibleUI", 1)
 
-    if GameTooltip then
-        local function showNemesisTooltip(guid)
-            local spawnId = parseSpawnIdFromGuid(guid)
-            if not spawnId then return end
-
-            local nemesis = NT.data.nemeses[spawnId]
-            if not nemesis then return end
-
-            GameTooltip:AddLine(" ")
-            GameTooltip:AddLine(string.format("|cff00ff00Nemesis|r R%d %s", nemesis.rank, nemesis.rankTier or ""))
-            if nemesis.affixText and nemesis.affixText ~= "" and nemesis.affixText ~= "None" then
-                GameTooltip:AddLine(nemesis.affixText, 1, 0.5, 0)
-            end
-        end
-
-        GameTooltip:HookScript("OnTooltipSetUnit", function(self)
-            local unit = self:GetUnit()
-            if not unit then return end
-
-            local guid = UnitGUID(unit)
-            if guid then
-                showNemesisTooltip(guid)
-            end
-        end)
-    end
 end
 
 function NT:OnDisable()
@@ -194,28 +169,6 @@ end
 
 function NT:UPDATE_MOUSEOVER_UNIT()
     self:TrackKnownUnit("mouseover")
-
-    local guid = UnitGUID("mouseover")
-    if not guid then return end
-
-    local spawnId = parseSpawnIdFromGuid(guid)
-    if not spawnId then return end
-
-    if self.data.nemeses[spawnId] then
-        self:ScheduleTimer(function(entryGuid)
-            local targetGuid = UnitGUID("mouseover")
-            if not targetGuid or targetGuid ~= entryGuid then return end
-
-            local entry = NT.data.nemeses[spawnId]
-            if not entry then return end
-
-            GameTooltip:AddLine(" ")
-            GameTooltip:AddLine(string.format("|cff00ff00Nemesis|r R%d %s", entry.rank, entry.rankTier or ""))
-            if entry.affixText and entry.affixText ~= "" and entry.affixText ~= "None" then
-                GameTooltip:AddLine(entry.affixText, 1, 0.5, 0)
-            end
-        end, 0, guid)
-    end
 end
 
 function NT:CHAT_MSG_SYSTEM(_, message)
