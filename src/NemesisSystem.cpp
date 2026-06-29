@@ -230,21 +230,6 @@ namespace
         return sConfigMgr->GetOption<uint8>("NemesisSystem.TrivialKillLevelDelta", 5);
     }
 
-    uint8 GetRewardOverlevelDiffMax()
-    {
-        return sConfigMgr->GetOption<uint8>("NemesisSystem.RewardOverlevelDiffMax", 10);
-    }
-
-    uint8 GetRewardUnderlevelDiffMax()
-    {
-        return sConfigMgr->GetOption<uint8>("NemesisSystem.RewardUnderlevelDiffMax", 10);
-    }
-
-    float GetRewardUnderdogMaxMultiplier()
-    {
-        return std::max(1.0f, sConfigMgr->GetOption<float>("NemesisSystem.RewardUnderdogMaxMultiplier", 2.0f));
-    }
-
     uint32 GetDecayHours()
     {
         return sConfigMgr->GetOption<uint32>("NemesisSystem.DecayHours", 48);
@@ -270,19 +255,9 @@ namespace
         return std::max<uint32>(1, sConfigMgr->GetOption<uint32>(revenge ? "NemesisSystem.RevengeRewardCount" : "NemesisSystem.BountyRewardCount", 1));
     }
 
-    uint32 GetRewardGold(bool revenge)
-    {
-        return sConfigMgr->GetOption<uint32>(revenge ? "NemesisSystem.RevengeRewardGold" : "NemesisSystem.BountyRewardGold", revenge ? 10000 : 2500);
-    }
-
     uint32 GetRewardItemPerRankBonus(bool revenge)
     {
         return sConfigMgr->GetOption<uint32>(revenge ? "NemesisSystem.RevengeRewardItemPerRankBonus" : "NemesisSystem.BountyRewardItemPerRankBonus", 0);
-    }
-
-    uint32 GetRewardGoldPerRankBonus(bool revenge)
-    {
-        return sConfigMgr->GetOption<uint32>(revenge ? "NemesisSystem.RevengeRewardGoldPerRankBonus" : "NemesisSystem.BountyRewardGoldPerRankBonus", revenge ? 2500 : 500);
     }
 
     bool ShouldAnnounceCreate()
@@ -1322,10 +1297,24 @@ namespace
         BroadcastNemesisRemove(spawnId, reason);
     }
 
+    void EraseNemesisName(Creature* creature)
+    {
+        if (!creature)
+            return;
+
+        std::lock_guard<std::recursive_mutex> lock(NemesisNameMutex);
+        if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
+            NemesisOriginalNames.erase(spawnId);
+        else
+            TemporaryNemesisOriginalNames.erase(creature->GetGUID());
+    }
+
     void DeleteNemesisState(Creature* creature, char const* reason = "cleared")
     {
         if (!creature)
             return;
+
+        EraseNemesisName(creature);
 
         std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
 
@@ -1538,73 +1527,21 @@ namespace
         return recipients;
     }
 
-    float GetRewardMultiplier(uint8 creatureLevel, uint8 referenceLevel)
+    void GrantReward(Player* player, bool revenge, uint8 rank, uint8 creatureLevel, uint8 recipientCount)
     {
-        int32 const levelDiff = int32(referenceLevel) - int32(creatureLevel);
-        if (levelDiff > 0)
-        {
-            uint8 const maxDiff = GetRewardOverlevelDiffMax();
-            if (!maxDiff)
-                return 0.0f;
-
-            float const multiplier = 1.0f - (float(levelDiff) / float(maxDiff));
-            return std::clamp(multiplier, 0.0f, 1.0f);
-        }
-
-        if (levelDiff < 0)
-        {
-            uint8 const maxDiff = GetRewardUnderlevelDiffMax();
-            float const maxMultiplier = GetRewardUnderdogMaxMultiplier();
-            if (!maxDiff || maxMultiplier <= 1.0f)
-                return 1.0f;
-
-            uint32 const underlevelDiff = uint32(-levelDiff);
-            float const progress = float(std::min<uint32>(underlevelDiff, maxDiff)) / float(maxDiff);
-            return 1.0f + ((maxMultiplier - 1.0f) * progress);
-        }
-
-        return 1.0f;
-    }
-
-    uint32 GetScaledItemCount(uint32 baseCount, float multiplier)
-    {
-        if (!baseCount || multiplier <= 0.0f)
-            return 0;
-
-        float const scaledCount = float(baseCount) * multiplier;
-        uint32 scaledItems = uint32(scaledCount);
-        float const fractional = scaledCount - float(scaledItems);
-
-        if (fractional > 0.0f && frand(0.0f, 1.0f) < fractional)
-            ++scaledItems;
-
-        return scaledItems;
-    }
-
-    uint32 GetScaledGold(uint32 baseGold, float multiplier)
-    {
-        if (!baseGold || multiplier <= 0.0f)
-            return 0;
-
-        return uint32((float(baseGold) * multiplier) + 0.5f);
-    }
-
-    void GrantReward(Player* player, bool revenge, uint8 rank, float rewardMultiplier)
-    {
-        if (!player)
+        if (!player || !recipientCount)
             return;
 
         uint32 const rankBonusSteps = rank > 0 ? uint32(rank - 1) : 0;
-        uint32 const baseItemCount = GetRewardCount(revenge) + (GetRewardItemPerRankBonus(revenge) * rankBonusSteps);
-        uint32 const itemCount = GetScaledItemCount(baseItemCount, rewardMultiplier);
-        uint32 const baseGold = GetRewardGold(revenge) + (GetRewardGoldPerRankBonus(revenge) * rankBonusSteps);
-        uint32 const gold = GetScaledGold(baseGold, rewardMultiplier);
 
-        if (uint32 itemId = GetRewardItem(revenge); itemId && itemCount)
-            player->AddItem(itemId, itemCount);
+        uint32 const gold = uint32(625 * rank * creatureLevel / recipientCount);
 
         if (gold)
             player->ModifyMoney(int32(gold), true);
+
+        uint32 const itemCount = GetRewardCount(revenge) + (GetRewardItemPerRankBonus(revenge) * rankBonusSteps);
+        if (uint32 itemId = GetRewardItem(revenge); itemId && itemCount)
+            player->AddItem(itemId, itemCount);
     }
 
     void RecordNemesisKill(Player* killer, NemesisState const& state, bool revenge)
@@ -1857,11 +1794,16 @@ public:
         bool const revenge = IsRevengeKill(killer, state);
         RecordNemesisKill(killer, state, revenge);
         RewardRecipients const recipients = CollectRewardRecipients(killer, killed);
-        float const rewardMultiplier = GetRewardMultiplier(killed->GetLevel(), recipients.highestLevel);
 
-        if (rewardMultiplier > 0.0f)
+        bool const hasOverleveled = std::any_of(recipients.players.begin(), recipients.players.end(),
+            [&](Player* p) { return int32(p->GetLevel()) - int32(killed->GetLevel()) >= 5; });
+
+        if (!hasOverleveled)
+        {
+            uint8 const recipientCount = uint8(std::max<size_t>(recipients.players.size(), 1));
             for (Player* recipient : recipients.players)
-                GrantReward(recipient, revenge, state.rank, rewardMultiplier);
+                GrantReward(recipient, revenge, state.rank, killed->GetLevel(), recipientCount);
+        }
 
         if (ShouldAnnounceKill() && state.rank >= GetAnnounceMinRank())
         {
@@ -2410,13 +2352,36 @@ public:
     {
         std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
         EnsureCacheLoaded();
+
+        for (auto const& [spawnId, state] : ActiveNemeses)
         {
-            std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
-            ActiveNemeses.clear();
-            ActiveTemporaryNemeses.clear();
-            RegenTickAccumulators.clear();
-            TemporaryRegenTickAccumulators.clear();
+            Creature* liveCreature = nullptr;
+            ForEachOnlinePlayer([&](Player* player)
+            {
+                if (!liveCreature && player->GetMap())
+                    liveCreature = FindLoadedCreatureBySpawnId(player->GetMap(), spawnId);
+            });
+
+            if (liveCreature)
+                ResetCreatureToBaseState(liveCreature, state);
+
+            BroadcastNemesisRemove(spawnId, "cleared-all");
         }
+
+        for (auto const& [guid, state] : ActiveTemporaryNemeses)
+        {
+            ForEachOnlinePlayer([&](Player* player)
+            {
+                if (Creature* live = ObjectAccessor::GetCreature(*player, guid))
+                    ResetCreatureToBaseState(live, state);
+            });
+        }
+
+        ActiveNemeses.clear();
+        ActiveTemporaryNemeses.clear();
+        RegenTickAccumulators.clear();
+        TemporaryRegenTickAccumulators.clear();
+
         CharacterDatabase.Execute("DELETE FROM `character_nemesis`");
         handler->PSendSysMessage(GetNemesisString(GetHandlerLocale(handler), NemesisStringId::CMD_CLEARALL_DONE).data());
         return true;

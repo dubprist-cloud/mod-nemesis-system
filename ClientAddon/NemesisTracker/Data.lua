@@ -230,7 +230,7 @@ function NT:GetAvailableZones()
     local filter = self.data.currentFilter or "all"
 
     for _, nemesis in pairs(self.data.nemeses) do
-        if not self:ShouldHideNemesis(nemesis) and (filter == "all" or nemesis.relation == filter) then
+        if not self:ShouldHideNemesis(nemesis) and not isTooOld(nemesis) and (filter == "all" or nemesis.relation == filter) then
             local key = zoneKey(nemesis.zoneId, nemesis.zoneName)
             if not seen[key] then
                 seen[key] = true

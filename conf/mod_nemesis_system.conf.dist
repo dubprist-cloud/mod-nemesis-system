@@ -177,22 +177,6 @@ NemesisSystem.RevengeRewardCount = 1
 NemesisSystem.RevengeRewardItemPerRankBonus = 0
 
 #
-#    NemesisSystem.RevengeRewardGold
-#        Description: Gold reward in copper for revenge kills.
-#        Default:     10000
-#
-
-NemesisSystem.RevengeRewardGold = 10000
-
-#
-#    NemesisSystem.RevengeRewardGoldPerRankBonus
-#        Description: Additional copper granted per rank above rank 1.
-#        Default:     2500
-#
-
-NemesisSystem.RevengeRewardGoldPerRankBonus = 2500
-
-#
 #    NemesisSystem.BountyRewardItem
 #        Description: Optional item reward granted when another player kills a
 #                     nemesis that targets someone else.
@@ -216,52 +200,6 @@ NemesisSystem.BountyRewardCount = 1
 #
 
 NemesisSystem.BountyRewardItemPerRankBonus = 0
-
-#
-#    NemesisSystem.BountyRewardGold
-#        Description: Gold reward in copper for bounty kills.
-#        Default:     2500
-#
-
-NemesisSystem.BountyRewardGold = 2500
-
-#
-#    NemesisSystem.BountyRewardGoldPerRankBonus
-#        Description: Additional copper granted per rank above rank 1.
-#        Default:     500
-#
-
-NemesisSystem.BountyRewardGoldPerRankBonus = 500
-
-#
-#    NemesisSystem.RewardOverlevelDiffMax
-#        Description: Maximum positive level difference between the highest
-#                     eligible nearby reward recipient and the nemesis before
-#                     rewards scale down to zero.
-#        Default:     10
-#
-
-NemesisSystem.RewardOverlevelDiffMax = 10
-
-#
-#    NemesisSystem.RewardUnderlevelDiffMax
-#        Description: Maximum negative level difference used to scale rewards
-#                     upward when the highest eligible nearby reward recipient
-#                     is below the nemesis level.
-#        Default:     10
-#
-
-NemesisSystem.RewardUnderlevelDiffMax = 10
-
-#
-#    NemesisSystem.RewardUnderdogMaxMultiplier
-#        Description: Maximum reward multiplier reached when the highest
-#                     eligible nearby reward recipient is at least
-#                     RewardUnderlevelDiffMax levels below the nemesis.
-#        Default:     2.0
-#
-
-NemesisSystem.RewardUnderdogMaxMultiplier = 2.0
 
 #
 #    NemesisSystem.EnragedHealthPctThreshold
