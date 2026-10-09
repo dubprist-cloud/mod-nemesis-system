@@ -2,7 +2,7 @@
 ## Title: NemesisTracker
 ## Notes: Companion addon for mod-nemesis-system
 ## Author: Cascade
-## Version: 0.2.0
+## Version: 0.6.2
 ## SavedVariables: NemesisTrackerDB
 ## X-Embeds: LibStub, CallbackHandler-1.0, AceAddon-3.0, AceEvent-3.0, AceTimer-3.0, AceConsole-3.0, AceDB-3.0, AceComm-3.0, AceLocale-3.0
 

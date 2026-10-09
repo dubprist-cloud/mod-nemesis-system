@@ -33,5 +33,12 @@ NT.data = NT.data or {
     page = 1,
     filteredCount = 0,
     lastReportBySpawnId = {},
+    top = {},
+    topReceived = false,
+    -- The requester's own standing, sent as V2:TOP_SELF when they are not inside the
+    -- returned top. nil means "no separate line needed" (they are already in the list).
+    topSelf = nil,
+    -- bit -> { name, desc }, sent by the server so descriptions always match its config.
+    affixCatalog = {},
 }
 

@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <functional>
@@ -81,6 +82,9 @@ namespace
         uint32 lastVictimGuid = 0;
         uint32 createdAt = 0;
         uint32 lastSeenAt = 0;
+        // Every player this nemesis has killed. Revenge goes to any of them (or their
+        // party), not only to the most recent victim.
+        std::vector<uint32> victims;
     };
 
     struct NemesisAddonView
@@ -119,7 +123,23 @@ namespace
     TemporaryNemesisStore ActiveTemporaryNemeses;
     TemporaryNemesisTickStore TemporaryRegenTickAccumulators;
     std::recursive_mutex NemesisStoreMutex;
-    bool CacheLoaded = false;
+    std::atomic<bool> CacheLoaded{ false };
+
+    // Lock-free hint used by the per-tick hot path (OnUnitUpdate) and by the per-event
+    // hooks to skip the global mutex entirely while no nemesis is stored. It is
+    // recomputed from the real container sizes on every mutation so it can never report
+    // "empty" while a nemesis is still tracked.
+    std::atomic<uint32> NemesisHotCount{ 0 };
+
+    void SyncHotCount()
+    {
+        NemesisHotCount.store(uint32(ActiveNemeses.size() + ActiveTemporaryNemeses.size()), std::memory_order_relaxed);
+    }
+
+    bool AnyNemesisActive()
+    {
+        return NemesisHotCount.load(std::memory_order_relaxed) != 0;
+    }
 
     using OriginalNameStore = std::unordered_map<ObjectGuid::LowType, std::string>;
     using TemporaryOriginalNameStore = std::unordered_map<ObjectGuid, std::string>;
@@ -127,21 +147,44 @@ namespace
     TemporaryOriginalNameStore TemporaryNemesisOriginalNames;
     std::recursive_mutex NemesisNameMutex;
 
-    void ApplyNemesisTooltipName(Creature* creature, uint8 rank, std::string_view tierLabel)
+    void ApplyNemesisTooltipName(Creature* creature, std::string_view tierLabel)
     {
         if (!creature)
             return;
 
-        std::string const originalName = creature->GetName();
+        // Reuse the first name we ever captured so repeated applications (rank-ups,
+        // rerolls, re-entering the world) replace the tier suffix instead of stacking it.
+        std::string originalName;
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(NemesisNameMutex);
+
+            if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
+            {
+                OriginalNameStore::iterator itr = NemesisOriginalNames.find(spawnId);
+                if (itr == NemesisOriginalNames.end())
+                {
+                    originalName = creature->GetName();
+                    NemesisOriginalNames[spawnId] = originalName;
+                }
+                else
+                    originalName = itr->second;
+            }
+            else
+            {
+                TemporaryOriginalNameStore::iterator itr = TemporaryNemesisOriginalNames.find(creature->GetGUID());
+                if (itr == TemporaryNemesisOriginalNames.end())
+                {
+                    originalName = creature->GetName();
+                    TemporaryNemesisOriginalNames[creature->GetGUID()] = originalName;
+                }
+                else
+                    originalName = itr->second;
+            }
+        }
+
         std::string const nemesisName = Acore::StringFormat("{} <{}>", originalName, tierLabel);
-
         creature->SetName(nemesisName.c_str());
-
-        std::lock_guard<std::recursive_mutex> lock(NemesisNameMutex);
-        if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
-            NemesisOriginalNames[spawnId] = originalName;
-        else
-            TemporaryNemesisOriginalNames[creature->GetGUID()] = originalName;
     }
 
     void RestoreNemesisTooltipName(Creature* creature)
@@ -174,7 +217,7 @@ namespace
     }
 
     std::string constexpr NEMESIS_ADDON_PREFIX = "Nemesis";
-    size_t constexpr NEMESIS_ADDON_CHUNK_SIZE = 220;
+    size_t constexpr NEMESIS_ADDON_CHUNK_SIZE = 200;
     std::array<uint32, 5> constexpr NEMESIS_DEFAULT_VISUAL_AURA_SPELLS =
     {
         63130, // Trial of the Champion shield visual level 1
@@ -189,6 +232,7 @@ namespace
     std::string GetNemesisDisplayName(Map* map, ObjectGuid::LowType spawnId, NemesisState const& state, LocaleConstant locale = LOCALE_enUS);
     void EnsureCacheLoaded();
     bool IsExpired(NemesisState const& state);
+    void SendNemesisAffixCatalog(Player* player);
 
     bool IsEnabled()
     {
@@ -233,6 +277,72 @@ namespace
     uint32 GetDecayHours()
     {
         return sConfigMgr->GetOption<uint32>("NemesisSystem.DecayHours", 48);
+    }
+
+    uint32 GetNemesisActivityTime(NemesisState const& state)
+    {
+        // A nemesis counts as alive while it keeps growing. Merely having its grid loaded,
+        // or a passing player's addon reporting a sighting, must not keep it around
+        // forever - otherwise a levelling zone accumulates unkillable max-rank mobs that
+        // never decay, because the grid is reloaded by every player who walks through.
+        return std::max(state.createdAt, state.lastPromotionAt);
+    }
+
+    void AddNemesisVictim(NemesisState& state, uint32 victimGuid)
+    {
+        if (!victimGuid)
+            return;
+
+        for (uint32 existing : state.victims)
+            if (existing == victimGuid)
+                return;
+
+        state.victims.push_back(victimGuid);
+    }
+
+    bool IsNemesisVictim(NemesisState const& state, uint32 guid)
+    {
+        if (!guid)
+            return false;
+
+        for (uint32 victimGuid : state.victims)
+            if (victimGuid == guid)
+                return true;
+
+        // Rows written before the victims table existed only carry the current target.
+        return state.targetGuid == guid;
+    }
+
+    void PersistNemesisVictim(ObjectGuid::LowType spawnId, uint32 victimGuid)
+    {
+        if (!spawnId || !victimGuid)
+            return;
+
+        CharacterDatabase.Execute(
+            "INSERT IGNORE INTO `character_nemesis_victims` (`nemesis_guid`, `victim_guid`, `killed_at`) VALUES ({}, {}, {})",
+            uint64(spawnId), victimGuid, uint32(GameTime::GetGameTime().count()));
+    }
+
+    void DeleteNemesisRecords(ObjectGuid::LowType spawnId)
+    {
+        if (!spawnId)
+            return;
+
+        CharacterDatabase.Execute("DELETE FROM `character_nemesis` WHERE `guid` = {}", uint64(spawnId));
+        CharacterDatabase.Execute("DELETE FROM `character_nemesis_victims` WHERE `nemesis_guid` = {}", uint64(spawnId));
+    }
+
+    // The creature's attack power as the core computed it, mirroring Creature::UpdateStats.
+    float GetCreatureBaseAttackPower(Creature* creature)
+    {
+        if (!creature)
+            return 0.0f;
+
+        if (CreatureTemplate const* info = creature->GetCreatureTemplate())
+            if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(creature->GetLevel(), info->unit_class))
+                return float(stats->AttackPower);
+
+        return 0.0f;
     }
 
     uint32 GetRankUpCooldownSeconds()
@@ -387,6 +497,37 @@ namespace
         return sConfigMgr->GetOption<uint32>("NemesisSystem.AddonReportCooldownSeconds", 30);
     }
 
+    float GetAddonReportMaxDistance()
+    {
+        // A value of 0 or below disables the distance check entirely.
+        return sConfigMgr->GetOption<float>("NemesisSystem.AddonReportMaxDistance", 150.0f);
+    }
+
+    uint32 GetRewardGoldPerRankLevel(bool revenge)
+    {
+        return sConfigMgr->GetOption<uint32>(revenge ? "NemesisSystem.RevengeRewardGoldPerRankLevel" : "NemesisSystem.BountyRewardGoldPerRankLevel", 25);
+    }
+
+    float GetMaxAffixDamageMultiplier()
+    {
+        return std::max(1.0f, sConfigMgr->GetOption<float>("NemesisSystem.MaxAffixDamageMultiplier", 2.5f));
+    }
+
+    uint32 GetRewardOverlevelDiffMax()
+    {
+        return sConfigMgr->GetOption<uint32>("NemesisSystem.RewardOverlevelDiffMax", 5);
+    }
+
+    uint32 GetRewardUnderlevelDiffMax()
+    {
+        return sConfigMgr->GetOption<uint32>("NemesisSystem.RewardUnderlevelDiffMax", 5);
+    }
+
+    float GetRewardUnderdogMaxMultiplier()
+    {
+        return std::max(1.0f, sConfigMgr->GetOption<float>("NemesisSystem.RewardUnderdogMaxMultiplier", 2.0f));
+    }
+
     bool IsPlayerbotVictim(Player* player)
     {
 #ifdef MOD_PLAYERBOTS
@@ -464,26 +605,54 @@ namespace
         }
     }
 
-    float GetHealthMultiplier(uint8 rank)
+    float GetHealthScalingLevelFactor(uint8 creatureLevel)
     {
+        // Base creature health grows roughly x8 from level 40 to 80 while player damage
+        // output grows roughly x20, so a flat health multiplier is far harsher at low
+        // levels. Scaling the ladder towards 1.0 below the reference level keeps a rank 5
+        // nemesis in a levelling zone hard but no longer mathematically unbeatable.
+        uint32 const referenceLevel = sConfigMgr->GetOption<uint32>("NemesisSystem.HealthScalingReferenceLevel", 80);
+        if (!referenceLevel || !creatureLevel)
+            return 1.0f;
+
+        return std::clamp(float(creatureLevel) / float(referenceLevel), 0.15f, 1.0f);
+    }
+
+    float GetHealthMultiplier(uint8 rank, uint8 creatureLevel)
+    {
+        float ladder;
+
         switch (rank)
         {
-            case 1: return 1.50f;
-            case 2: return 2.00f;
-            case 3: return 3.00f;
-            case 4: return 4.50f;
-            default: return 6.00f;
+            case 1: ladder = 1.50f; break;
+            case 2: ladder = 2.00f; break;
+            case 3: ladder = 3.00f; break;
+            case 4: ladder = 4.50f; break;
+            default: ladder = 6.00f; break;
         }
+
+        return 1.0f + (ladder - 1.0f) * GetHealthScalingLevelFactor(creatureLevel);
     }
 
     float GetDamageMultiplier(uint8 rank)
     {
-        return GetHealthMultiplier(rank);
+        // Kept deliberately lower than the health ladder: health scaling only lengthens a
+        // fight, while damage scaling decides whether the fight is survivable at all.
+        switch (rank)
+        {
+            case 1: return 1.15f;
+            case 2: return 1.30f;
+            case 3: return 1.50f;
+            case 4: return 1.70f;
+            default: return 2.00f;
+        }
     }
 
     float GetVampiricHealPct()
     {
-        return 0.50f;
+        // Configurable because Vampiric together with Regenerating is by far the strongest
+        // affix pair: it can out-sustain a solo player's entire damage output.
+        return std::clamp(sConfigMgr->GetOption<float>("NemesisSystem.VampiricHealPct", 25.0f), 0.0f, 100.0f) / 100.0f;
     }
 
     float GetSwiftSpeedMultiplier()
@@ -494,6 +663,26 @@ namespace
     float GetSwiftAttackTimeMultiplier()
     {
         return 0.70f;
+    }
+
+    float GetSwiftDamageMultiplier()
+    {
+        // The core scales per-swing damage by attackTime/1000, so swinging 30% faster
+        // would otherwise cancel out exactly and leave Swift as a pure movement affix.
+        // This factor puts the lost damage back and then some, so Swift really hits harder.
+        return std::max(1.0f, sConfigMgr->GetOption<float>("NemesisSystem.SwiftDamageMultiplier", 1.25f));
+    }
+
+    uint32 GetRankUpFlashVisual()
+    {
+        // SpellVisualKit id played on the creature the moment it gains a rank. 0 disables
+        // it. Use ".debug play visual <id>" in game to preview a kit on yourself.
+        return sConfigMgr->GetOption<uint32>("NemesisSystem.RankUpFlashVisual", 179);
+    }
+
+    uint32 GetLeaderboardMaxEntries()
+    {
+        return std::clamp(sConfigMgr->GetOption<uint32>("NemesisSystem.LeaderboardMaxEntries", 10), 1u, 50u);
     }
 
     float GetSavageDamageMultiplier()
@@ -648,16 +837,10 @@ namespace
 
         std::string const fullMessage = BuildAddonEnvelope(payload);
 
-        WorldPacket data(SMSG_MESSAGECHAT, 100);
-        data << uint8(ChatMsg::CHAT_MSG_WHISPER);
-        data << int32(LANG_ADDON);
-        data << player->GetGUID();
-        data << uint32(0);
-        data << player->GetGUID();
-        data << uint32(fullMessage.length() + 1);
-        data << fullMessage;
-        data << uint8(0);
-
+        // The GUID overload with an explicit CHAT_TAG_NONE keeps the wire format identical
+        // for every sender; the WorldObject overload would inject a name field for GMs.
+        WorldPacket data;
+        ChatHandler::BuildChatPacket(data, ChatMsg::CHAT_MSG_WHISPER, LANG_ADDON, player->GetGUID(), player->GetGUID(), fullMessage, CHAT_TAG_NONE);
         player->GetSession()->SendPacket(&data);
     }
 
@@ -691,18 +874,28 @@ namespace
         if (!player)
             return "public";
 
-        uint32 const playerGuid = player->GetGUID().GetCounter();
-        if (state.targetGuid == playerGuid)
+        // The relation is judged against EVERY victim, so a nemesis that wronged several
+        // players is "theirs" for all of them.
+        if (IsNemesisVictim(state, player->GetGUID().GetCounter()))
             return "own";
 
         if (Group* group = player->GetGroup())
-            if (group->IsMember(ObjectGuid::Create<HighGuid::Player>(state.targetGuid)))
-                return "party";
+            for (uint32 victimGuid : state.victims)
+                if (group->IsMember(ObjectGuid::Create<HighGuid::Player>(victimGuid)))
+                    return "party";
 
-        if (player->GetGuildId())
-            if (Player* target = HashMapHolder<Player>::Find(ObjectGuid::Create<HighGuid::Player>(state.targetGuid)))
-                if (target->GetGuildId() == player->GetGuildId())
-                    return "guild";
+        // Guild membership is read from the character cache, not from a live Player
+        // lookup: HashMapHolder only knows ONLINE characters, so a guildmate's nemesis
+        // used to fall through to "public" whenever that guildmate was offline - which
+        // made the guild filter drop entries and the public filter show them instead.
+        if (uint32 const guildId = player->GetGuildId())
+            for (uint32 victimGuid : state.victims)
+            {
+                ObjectGuid const victimObjectGuid = ObjectGuid::Create<HighGuid::Player>(victimGuid);
+                if (CharacterCacheEntry const* victimInfo = sCharacterCache->GetCharacterCacheByGuid(victimObjectGuid))
+                    if (uint32(victimInfo->GuildId) == guildId)
+                        return "guild";
+            }
 
         return "public";
     }
@@ -712,12 +905,13 @@ namespace
         if (!player)
             return "none";
 
-        if (player->GetGUID().GetCounter() == state.targetGuid)
+        if (IsNemesisVictim(state, player->GetGUID().GetCounter()))
             return "revenge";
 
         if (Group* group = player->GetGroup())
-            if (group->IsMember(ObjectGuid::Create<HighGuid::Player>(state.targetGuid)))
-                return "shared";
+            for (uint32 victimGuid : state.victims)
+                if (group->IsMember(ObjectGuid::Create<HighGuid::Player>(victimGuid)))
+                    return "shared";
 
         return "bounty";
     }
@@ -861,8 +1055,8 @@ namespace
             return false;
 
         uint32 const now = uint32(GameTime::GetGameTime().count());
-        uint32 const lastSeenAt = state.lastSeenAt ? state.lastSeenAt : state.createdAt;
-        return lastSeenAt && (lastSeenAt + (recentHours * 60u * 60u) >= now);
+        uint32 const activityAt = GetNemesisActivityTime(state);
+        return activityAt && (activityAt + (recentHours * 60u * 60u) >= now);
     }
 
     std::vector<ObjectGuid::LowType> CollectBootstrapSpawnIds(Player* player, bool includeAll = false)
@@ -877,21 +1071,27 @@ namespace
         };
 
         std::vector<BootstrapEntry> matches;
-        matches.reserve(ActiveNemeses.size());
-
-        for (NemesisStore::iterator itr = ActiveNemeses.begin(); itr != ActiveNemeses.end();)
         {
-            if (IsExpired(itr->second))
+            std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
+
+            matches.reserve(ActiveNemeses.size());
+
+            for (NemesisStore::iterator itr = ActiveNemeses.begin(); itr != ActiveNemeses.end();)
             {
-                CharacterDatabase.Execute("DELETE FROM `character_nemesis` WHERE `guid` = {}", uint64(itr->first));
-                itr = ActiveNemeses.erase(itr);
-                continue;
+                if (IsExpired(itr->second))
+                {
+                    DeleteNemesisRecords(itr->first);
+                    itr = ActiveNemeses.erase(itr);
+                    continue;
+                }
+
+                if (includeAll || ShouldIncludeNemesisInBootstrap(player, itr->second))
+                    matches.push_back({ itr->first, itr->second.rank, GetNemesisActivityTime(itr->second) });
+
+                ++itr;
             }
 
-            if (includeAll || ShouldIncludeNemesisInBootstrap(player, itr->second))
-                matches.push_back({ itr->first, itr->second.rank, itr->second.lastSeenAt ? itr->second.lastSeenAt : itr->second.createdAt });
-
-            ++itr;
+            SyncHotCount();
         }
 
         std::sort(matches.begin(), matches.end(), [](BootstrapEntry const& left, BootstrapEntry const& right)
@@ -931,6 +1131,7 @@ namespace
 
         std::vector<ObjectGuid::LowType> const spawnIds = CollectBootstrapSpawnIds(player, includeAll);
 
+        SendNemesisAffixCatalog(player);
         SendAddonPayload(player, BuildHelloPayload(spawnIds.size()));
         SendAddonPayload(player, Acore::StringFormat("V2:BOOTSTRAP_BEGIN:{}:{}", spawnIds.size(), uint32(GameTime::GetGameTime().count())));
 
@@ -952,6 +1153,154 @@ namespace
         }
 
         SendAddonPayload(player, "V2:BOOTSTRAP_END");
+    }
+
+    // Monthly leaderboard, read straight from the table the website feed already uses.
+    void SendNemesisLeaderboard(Player* player)
+    {
+        if (!player)
+            return;
+
+        std::vector<std::string> entries;
+        ObjectGuid::LowType const selfGuid = player->GetGUID().GetCounter();
+        bool selfInTop = false;
+
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT `character_guid`, `character_name`, `kill_count`, `revenge_kill_count`, `bounty_kill_count`, `highest_rank_killed` "
+            "FROM `character_nemesis_monthly_kills` WHERE `month_key` = DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m') "
+            "ORDER BY `kill_count` DESC, `highest_rank_killed` DESC, `last_kill_at` DESC LIMIT {}",
+            GetLeaderboardMaxEntries());
+
+        if (result)
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                if (fields[0].Get<uint32>() == selfGuid)
+                    selfInTop = true;
+
+                entries.push_back(Acore::StringFormat("V2:TOP_ENTRY:{}:{}:{}:{}:{}:{}",
+                    uint32(entries.size() + 1),
+                    SanitizeAddonField(fields[1].Get<std::string>()),
+                    fields[2].Get<uint32>(),
+                    fields[3].Get<uint32>(),
+                    fields[4].Get<uint32>(),
+                    uint32(fields[5].Get<uint8>())));
+            }
+            while (result->NextRow());
+        }
+
+        SendAddonPayload(player, Acore::StringFormat("V2:TOP_BEGIN:{}", uint32(entries.size())));
+        for (std::string const& entry : entries)
+            SendChunkedAddonPayload(player, entry);
+
+        // The requester's own line, sent separately so the addon can pin it to the bottom of
+        // the pane. A player who is outside the returned top - or who has not killed anything
+        // this month - still gets to see exactly where they stand. When they are already in
+        // the top the addon highlights their row instead and this message is skipped.
+        if (!selfInTop)
+        {
+            uint32 place = 0;
+            uint32 kills = 0;
+            uint32 revenge = 0;
+            uint32 bounty = 0;
+            uint32 best = 0;
+
+            QueryResult own = CharacterDatabase.Query(
+                "SELECT `kill_count`, `revenge_kill_count`, `bounty_kill_count`, `highest_rank_killed`, `last_kill_at` "
+                "FROM `character_nemesis_monthly_kills` WHERE `month_key` = DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m') "
+                "AND `character_guid` = {}",
+                selfGuid);
+
+            if (own)
+            {
+                Field* fields = own->Fetch();
+                kills = fields[0].Get<uint32>();
+                revenge = fields[1].Get<uint32>();
+                bounty = fields[2].Get<uint32>();
+                best = uint32(fields[3].Get<uint8>());
+                uint32 const lastKill = fields[4].Get<uint32>();
+
+                // Same ordering as the top query, so the reported place matches what the
+                // player would see if the list were long enough to include them.
+                QueryResult ahead = CharacterDatabase.Query(
+                    "SELECT COUNT(*) FROM `character_nemesis_monthly_kills` "
+                    "WHERE `month_key` = DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m') "
+                    "AND (`kill_count` > {} OR (`kill_count` = {} AND `highest_rank_killed` > {}) "
+                    "OR (`kill_count` = {} AND `highest_rank_killed` = {} AND `last_kill_at` > {}))",
+                    kills, kills, best, kills, best, lastKill);
+
+                if (ahead)
+                    place = ahead->Fetch()[0].Get<uint32>() + 1;
+            }
+
+            SendChunkedAddonPayload(player, Acore::StringFormat("V2:TOP_SELF:{}:{}:{}:{}:{}:{}",
+                place,
+                SanitizeAddonField(player->GetName()),
+                kills,
+                revenge,
+                bounty,
+                best));
+        }
+
+        SendAddonPayload(player, "V2:TOP_END");
+    }
+
+    // The affix catalogue is sent once per bootstrap instead of riding on every nemesis
+    // payload. Descriptions are built here, from the live configuration, so the addon
+    // never has to hardcode values that a server operator can change.
+    void SendNemesisAffixCatalog(Player* player)
+    {
+        if (!player)
+            return;
+
+        LocaleConstant const locale = player->GetSession() ? player->GetSession()->GetSessionDbcLocale() : LOCALE_enUS;
+
+        struct AffixInfo
+        {
+            uint32 bit;
+            NemesisStringId nameId;
+            std::string description;
+        };
+
+        std::vector<AffixInfo> const affixes =
+        {
+            { NEMESIS_AFFIX_VAMPIRIC, NemesisStringId::AFFIX_VAMPIRIC,
+              Acore::StringFormat(GetNemesisString(locale, NemesisStringId::AFFIX_DESC_VAMPIRIC), GetVampiricHealPct() * 100.0f) },
+
+            { NEMESIS_AFFIX_SWIFT, NemesisStringId::AFFIX_SWIFT,
+              Acore::StringFormat(GetNemesisString(locale, NemesisStringId::AFFIX_DESC_SWIFT),
+                  (1.0f - GetSwiftAttackTimeMultiplier()) * 100.0f,
+                  (GetSwiftDamageMultiplier() - 1.0f) * 100.0f,
+                  (GetSwiftSpeedMultiplier() - 1.0f) * 100.0f) },
+
+            { NEMESIS_AFFIX_JUGGERNAUT, NemesisStringId::AFFIX_JUGGERNAUT,
+              std::string(GetNemesisString(locale, NemesisStringId::AFFIX_DESC_JUGGERNAUT)) },
+
+            { NEMESIS_AFFIX_SAVAGE, NemesisStringId::AFFIX_SAVAGE,
+              Acore::StringFormat(GetNemesisString(locale, NemesisStringId::AFFIX_DESC_SAVAGE),
+                  (GetSavageDamageMultiplier() - 1.0f) * 100.0f) },
+
+            { NEMESIS_AFFIX_SPELLWARD, NemesisStringId::AFFIX_SPELLWARD,
+              Acore::StringFormat(GetNemesisString(locale, NemesisStringId::AFFIX_DESC_SPELLWARD),
+                  (1.0f - GetSpellwardDamageMultiplier()) * 100.0f) },
+
+            { NEMESIS_AFFIX_ENRAGED, NemesisStringId::AFFIX_ENRAGED,
+              Acore::StringFormat(GetNemesisString(locale, NemesisStringId::AFFIX_DESC_ENRAGED),
+                  (GetEnragedDamageMultiplier() - 1.0f) * 100.0f,
+                  GetEnragedHealthPctThreshold()) },
+
+            { NEMESIS_AFFIX_REGEN, NemesisStringId::AFFIX_REGEN,
+              Acore::StringFormat(GetNemesisString(locale, NemesisStringId::AFFIX_DESC_REGEN),
+                  GetRegenerationHealthPct(),
+                  float(GetRegenerationIntervalMs()) / 1000.0f) },
+        };
+
+        for (AffixInfo const& affix : affixes)
+            SendChunkedAddonPayload(player, Acore::StringFormat("V2:AFFIX:{}:{}:{}",
+                affix.bit,
+                SanitizeAddonField(std::string(GetNemesisString(locale, affix.nameId))),
+                affix.description));
     }
 
     void SendValidatedNemesisUpsert(Player* player, ObjectGuid::LowType spawnId, NemesisState const& state)
@@ -1082,10 +1431,14 @@ namespace
     bool IsExpired(NemesisState const& state)
     {
         uint32 const decayHours = GetDecayHours();
-        if (!decayHours || !state.createdAt)
+        if (!decayHours)
             return false;
 
-        return state.createdAt + (decayHours * 60u * 60u) < uint32(GameTime::GetGameTime().count());
+        uint32 const reference = GetNemesisActivityTime(state);
+        if (!reference)
+            return false;
+
+        return reference + (decayHours * 60u * 60u) < uint32(GameTime::GetGameTime().count());
     }
 
     uint32 GetRankUpCooldownRemaining(NemesisState const& state)
@@ -1123,17 +1476,21 @@ namespace
 
     void EnsureCacheLoaded()
     {
-        if (CacheLoaded)
-            return;
+        std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
 
-        CacheLoaded = true;
+        if (CacheLoaded.load(std::memory_order_relaxed))
+            return;
 
         QueryResult result = CharacterDatabase.Query(
             "SELECT `guid`, `creature_entry`, `map_id`, `zone_id`, `pos_x`, `pos_y`, `pos_z`, `rank`, `affix_mask`, `base_health`, `base_scale`, `base_melee_min_damage`, "
             "`base_melee_max_damage`, `base_ranged_min_damage`, `base_ranged_max_damage`, `base_attack_time`, `base_range_attack_time`, `base_run_speed_rate`, `nemesis_target_guid`, `last_promotion_at`, `last_victim_guid`, "
             "`last_seen_at`, UNIX_TIMESTAMP(`creation_date`) FROM `character_nemesis`");
         if (!result)
+        {
+            SyncHotCount();
+            CacheLoaded.store(true, std::memory_order_relaxed);
             return;
+        }
 
         do
         {
@@ -1170,18 +1527,44 @@ namespace
 
             if (IsExpired(state))
             {
-                CharacterDatabase.Execute("DELETE FROM `character_nemesis` WHERE `guid` = {}", uint64(spawnId));
+                DeleteNemesisRecords(spawnId);
                 continue;
             }
 
             ActiveNemeses[spawnId] = state;
         }
         while (result->NextRow());
+
+        // Victims live in their own table so a nemesis can owe revenge to every player it
+        // has killed, not just the latest one.
+        QueryResult victims = CharacterDatabase.Query("SELECT `nemesis_guid`, `victim_guid` FROM `character_nemesis_victims`");
+        if (victims)
+        {
+            do
+            {
+                Field* fields = victims->Fetch();
+
+                NemesisStore::iterator itr = ActiveNemeses.find(fields[0].Get<uint64>());
+                if (itr != ActiveNemeses.end())
+                    AddNemesisVictim(itr->second, fields[1].Get<uint32>());
+            }
+            while (victims->NextRow());
+        }
+
+        // The cache is published as loaded only after the store has been populated, so the
+        // lock-free fast path can never observe "loaded but empty" while rows are loading.
+        SyncHotCount();
+        CacheLoaded.store(true, std::memory_order_relaxed);
     }
 
     bool TryGetNemesisState(ObjectGuid::LowType spawnId, NemesisState& state)
     {
         if (!spawnId)
+            return false;
+
+        // Fast path for the per-tick hooks: once the cache is loaded and no nemesis is
+        // tracked, no lookup is required at all and the global mutex is never taken.
+        if (CacheLoaded.load(std::memory_order_relaxed) && !AnyNemesisActive())
             return false;
 
         std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
@@ -1193,8 +1576,9 @@ namespace
 
         if (IsExpired(itr->second))
         {
-            CharacterDatabase.Execute("DELETE FROM `character_nemesis` WHERE `guid` = {}", uint64(spawnId));
+            DeleteNemesisRecords(spawnId);
             ActiveNemeses.erase(itr);
+            SyncHotCount();
             return false;
         }
 
@@ -1205,6 +1589,9 @@ namespace
     bool TryGetNemesisState(Creature* creature, NemesisState& state)
     {
         if (!creature)
+            return false;
+
+        if (CacheLoaded.load(std::memory_order_relaxed) && !AnyNemesisActive())
             return false;
 
         std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
@@ -1236,6 +1623,7 @@ namespace
             storedState.zoneId = creature->GetZoneId();
             storedState.lastSeenAt = storedState.lastSeenAt ? storedState.lastSeenAt : uint32(GameTime::GetGameTime().count());
             ActiveTemporaryNemeses[creature->GetGUID()] = storedState;
+            SyncHotCount();
             return;
         }
 
@@ -1281,6 +1669,7 @@ namespace
             storedState.lastSeenAt);
 
         ActiveNemeses[creature->GetSpawnId()] = storedState;
+        SyncHotCount();
     }
 
     void DeleteNemesisState(ObjectGuid::LowType spawnId, char const* reason = "cleared")
@@ -1288,12 +1677,16 @@ namespace
         if (!spawnId)
             return;
 
-        std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
-        EnsureCacheLoaded();
+        {
+            std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
+            EnsureCacheLoaded();
 
-        ActiveNemeses.erase(spawnId);
-        RegenTickAccumulators.erase(spawnId);
-        CharacterDatabase.Execute("DELETE FROM `character_nemesis` WHERE `guid` = {}", uint64(spawnId));
+            ActiveNemeses.erase(spawnId);
+            RegenTickAccumulators.erase(spawnId);
+            SyncHotCount();
+        }
+
+        DeleteNemesisRecords(spawnId);
         BroadcastNemesisRemove(spawnId, reason);
     }
 
@@ -1316,16 +1709,16 @@ namespace
 
         EraseNemesisName(creature);
 
-        std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
-
         if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
         {
             DeleteNemesisState(spawnId, reason);
             return;
         }
 
+        std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
         ActiveTemporaryNemeses.erase(creature->GetGUID());
         TemporaryRegenTickAccumulators.erase(creature->GetGUID());
+        SyncHotCount();
         (void)reason;
     }
 
@@ -1451,6 +1844,9 @@ namespace
         creature->UpdateSpeed(MOVE_RUN, true);
         ApplyJuggernautImmunity(creature, false);
 
+        if (float const baseAttackPower = GetCreatureBaseAttackPower(creature))
+            creature->SetStatFlatModifier(UNIT_MOD_ATTACK_POWER, BASE_VALUE, baseAttackPower);
+
         RemoveNemesisVisualAuras(creature);
         RestoreNemesisTooltipName(creature);
 
@@ -1465,14 +1861,18 @@ namespace
         if (!killer)
             return false;
 
-        if (killer->GetGUID().GetCounter() == state.targetGuid)
+        if (IsNemesisVictim(state, killer->GetGUID().GetCounter()))
             return true;
 
         Group* group = killer->GetGroup();
         if (!group)
             return false;
 
-        return group->IsMember(ObjectGuid::Create<HighGuid::Player>(state.targetGuid));
+        for (uint32 victimGuid : state.victims)
+            if (group->IsMember(ObjectGuid::Create<HighGuid::Player>(victimGuid)))
+                return true;
+
+        return false;
     }
 
     struct RewardRecipients
@@ -1527,19 +1927,54 @@ namespace
         return recipients;
     }
 
-    void GrantReward(Player* player, bool revenge, uint8 rank, uint8 creatureLevel, uint8 recipientCount)
+    float GetRewardLevelMultiplier(int32 levelDiff)
+    {
+        if (levelDiff > 0)
+        {
+            uint32 const overMax = GetRewardOverlevelDiffMax();
+            if (!overMax)
+                return 1.0f;
+
+            if (uint32(levelDiff) >= overMax)
+                return 0.0f;
+
+            return 1.0f - float(levelDiff) / float(overMax);
+        }
+
+        if (levelDiff < 0)
+        {
+            uint32 const underMax = GetRewardUnderlevelDiffMax();
+            if (!underMax)
+                return 1.0f;
+
+            float const ratio = float(std::min(uint32(-levelDiff), underMax)) / float(underMax);
+            return 1.0f + ratio * (GetRewardUnderdogMaxMultiplier() - 1.0f);
+        }
+
+        return 1.0f;
+    }
+
+    void GrantReward(Player* player, bool revenge, uint8 rank, uint8 creatureLevel, uint8 highestRecipientLevel, uint8 recipientCount)
     {
         if (!player || !recipientCount)
             return;
 
+        // Reward scaling is driven by the highest level among the nearby eligible recipients.
+        float const levelMultiplier = GetRewardLevelMultiplier(int32(highestRecipientLevel) - int32(creatureLevel));
+        if (levelMultiplier <= 0.0f)
+            return;
+
         uint32 const rankBonusSteps = rank > 0 ? uint32(rank - 1) : 0;
 
-        uint32 const gold = uint32(625 * rank * creatureLevel / recipientCount);
+        uint32 const goldPerRankLevel = GetRewardGoldPerRankLevel(revenge);
+        uint32 const gold = goldPerRankLevel ? uint32(float(goldPerRankLevel * rank * creatureLevel) * levelMultiplier / float(recipientCount)) : 0;
 
         if (gold)
             player->ModifyMoney(int32(gold), true);
 
-        uint32 const itemCount = GetRewardCount(revenge) + (GetRewardItemPerRankBonus(revenge) * rankBonusSteps);
+        uint32 itemCount = GetRewardCount(revenge) + (GetRewardItemPerRankBonus(revenge) * rankBonusSteps);
+        itemCount = uint32(float(itemCount) * levelMultiplier);
+
         if (uint32 itemId = GetRewardItem(revenge); itemId && itemCount)
             player->AddItem(itemId, itemCount);
     }
@@ -1646,11 +2081,22 @@ namespace
 
         RemoveNemesisVisualAuras(creature);
 
-        uint32 const scaledHealth = std::max<uint32>(1, uint32(float(state.baseHealth) * GetHealthMultiplier(state.rank)));
-        float const meleeMinDamage = std::max<float>(BASE_MINDAMAGE, state.baseMeleeMinDamage * GetDamageMultiplier(state.rank));
-        float const meleeMaxDamage = std::max<float>(BASE_MAXDAMAGE, state.baseMeleeMaxDamage * GetDamageMultiplier(state.rank));
-        float const rangedMinDamage = std::max<float>(0.0f, state.baseRangedMinDamage * GetDamageMultiplier(state.rank));
-        float const rangedMaxDamage = std::max<float>(0.0f, state.baseRangedMaxDamage * GetDamageMultiplier(state.rank));
+        uint32 const scaledHealth = std::max<uint32>(1, uint32(float(state.baseHealth) * GetHealthMultiplier(state.rank, creature->GetLevel())));
+
+        float const swiftFactor = HasAffix(state, NEMESIS_AFFIX_SWIFT) ? GetSwiftDamageMultiplier() : 1.0f;
+        float const damageMultiplier = GetDamageMultiplier(state.rank) * swiftFactor;
+
+        float const meleeMinDamage = std::max<float>(BASE_MINDAMAGE, state.baseMeleeMinDamage * damageMultiplier);
+        float const meleeMaxDamage = std::max<float>(BASE_MAXDAMAGE, state.baseMeleeMaxDamage * damageMultiplier);
+        float const rangedMinDamage = std::max<float>(0.0f, state.baseRangedMinDamage * damageMultiplier);
+        float const rangedMaxDamage = std::max<float>(0.0f, state.baseRangedMaxDamage * damageMultiplier);
+
+        // Attack power is scaled by the same factor as the weapon. Without this the flat
+        // AP/14 term stayed at its base value, so the effective rank multiplier depended on
+        // the mob's class (a warrior mob gained x1.82 while a caster gained almost x2.0).
+        float const baseAttackPower = GetCreatureBaseAttackPower(creature);
+        if (baseAttackPower > 0.0f)
+            creature->SetStatFlatModifier(UNIT_MOD_ATTACK_POWER, BASE_VALUE, baseAttackPower * damageMultiplier);
 
         creature->SetObjectScale(state.baseScale * GetScaleMultiplier(state.rank));
         creature->SetCreateHealth(scaledHealth);
@@ -1694,7 +2140,7 @@ namespace
             creature->SetHealth(std::min<uint32>(creature->GetHealth(), scaledHealth));
 
         ApplyNemesisVisualAuras(creature, state.rank);
-        ApplyNemesisTooltipName(creature, state.rank, GetRankTierLabel(state.rank));
+        ApplyNemesisTooltipName(creature, GetRankTierLabel(state.rank));
     }
 
     bool IsBelowEnrageThreshold(Creature* creature)
@@ -1725,15 +2171,24 @@ namespace
         state.mapId = killer->GetMapId();
         state.zoneId = killer->GetZoneId();
         state.targetGuid = killed->GetGUID().GetCounter();
+        AddNemesisVictim(state, killed->GetGUID().GetCounter());
         state.lastPromotionAt = now;
         state.lastVictimGuid = killed->GetGUID().GetCounter();
-        state.createdAt = now;
+        if (!state.createdAt)
+            state.createdAt = now;
         state.lastSeenAt = now;
         RollAffixes(state);
 
         SaveNemesisState(killer, state);
+        PersistNemesisVictim(killer->GetSpawnId(), killed->GetGUID().GetCounter());
         ApplyNemesisState(killer, state);
         killer->SetFullHealth();
+
+        // A one-shot visual so nearby players notice the promotion, not just the chat line.
+        bool const gainedRank = !existed || state.rank > previousRank;
+        if (gainedRank)
+            if (uint32 const flashVisual = GetRankUpFlashVisual())
+                killer->SendPlaySpellVisual(flashVisual);
         if (ObjectGuid::LowType const spawnId = killer->GetSpawnId())
             BroadcastNemesisUpsert(spawnId, state);
         BroadcastRankFiveNemesisIfPersistent(killer, state);
@@ -1795,15 +2250,9 @@ public:
         RecordNemesisKill(killer, state, revenge);
         RewardRecipients const recipients = CollectRewardRecipients(killer, killed);
 
-        bool const hasOverleveled = std::any_of(recipients.players.begin(), recipients.players.end(),
-            [&](Player* p) { return int32(p->GetLevel()) - int32(killed->GetLevel()) >= 5; });
-
-        if (!hasOverleveled)
-        {
-            uint8 const recipientCount = uint8(std::max<size_t>(recipients.players.size(), 1));
-            for (Player* recipient : recipients.players)
-                GrantReward(recipient, revenge, state.rank, killed->GetLevel(), recipientCount);
-        }
+        uint8 const recipientCount = uint8(std::max<size_t>(recipients.players.size(), 1));
+        for (Player* recipient : recipients.players)
+            GrantReward(recipient, revenge, state.rank, killed->GetLevel(), recipients.highestLevel, recipientCount);
 
         if (ShouldAnnounceKill() && state.rank >= GetAnnounceMinRank())
         {
@@ -1844,13 +2293,18 @@ public:
         state.homeX = creature->GetPositionX();
         state.homeY = creature->GetPositionY();
         state.homeZ = creature->GetPositionZ();
-        state.lastSeenAt = uint32(GameTime::GetGameTime().count());
 
-        std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
-        if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
-            ActiveNemeses[spawnId] = state;
-        else if (IsTemporaryNemesisCandidate(creature))
-            ActiveTemporaryNemeses[creature->GetGUID()] = state;
+        {
+            std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
+            if (ObjectGuid::LowType const spawnId = creature->GetSpawnId())
+                ActiveNemeses[spawnId] = state;
+            else if (IsTemporaryNemesisCandidate(creature))
+                ActiveTemporaryNemeses[creature->GetGUID()] = state;
+            SyncHotCount();
+        }
+
+        // Deliberately no last_seen_at update here: a loaded grid is not player
+        // engagement, and refreshing it would keep every nemesis in a busy zone alive.
     }
 
     void OnCreatureRemoveWorld(Creature* creature) override
@@ -1861,33 +2315,18 @@ public:
         std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
         ActiveTemporaryNemeses.erase(creature->GetGUID());
         TemporaryRegenTickAccumulators.erase(creature->GetGUID());
+        SyncHotCount();
     }
 
-    void OnAllCreatureUpdate(Creature* creature, uint32 /*diff*/) override
-    {
-        if (!creature)
-            return;
-
-        NemesisState state;
-        if (!TryGetNemesisState(creature, state))
-            return;
-
-        if (creature->IsAlive())
-        {
-            // Re-apply visual auras in case they were removed by combat exit / evade / reset
-            ApplyNemesisVisualAuras(creature, state.rank);
-            return;
-        }
-
-        EraseRegenAccumulator(creature);
-        DeleteNemesisState(creature, "dead");
-    }
+    // OnAllCreatureUpdate used to run for every creature in the world on every tick just
+    // to refresh auras and notice deaths. Both jobs now hang off events instead:
+    // the aura refresh on OnUnitEnterEvadeMode and the cleanup on OnUnitDeath.
 };
 
 class NemesisSystemUnitScript : public UnitScript
 {
 public:
-    NemesisSystemUnitScript() : UnitScript("NemesisSystemUnitScript", true, { UNITHOOK_ON_DAMAGE, UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_ON_UNIT_UPDATE }) { }
+    NemesisSystemUnitScript() : UnitScript("NemesisSystemUnitScript", true, { UNITHOOK_ON_DAMAGE, UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_ON_UNIT_UPDATE, UNITHOOK_ON_UNIT_DEATH, UNITHOOK_ON_UNIT_ENTER_EVADE_MODE }) { }
 
     void OnDamage(Unit* attacker, Unit* /*victim*/, uint32& damage) override
     {
@@ -1900,17 +2339,55 @@ public:
         if (!TryGetNemesisState(creature, state))
             return;
 
+        float affixMultiplier = 1.0f;
         if (HasAffix(state, NEMESIS_AFFIX_SAVAGE))
-            damage = uint32(float(damage) * GetSavageDamageMultiplier());
+            affixMultiplier *= GetSavageDamageMultiplier();
 
         if (HasAffix(state, NEMESIS_AFFIX_ENRAGED) && IsBelowEnrageThreshold(creature))
-            damage = uint32(float(damage) * GetEnragedDamageMultiplier());
+            affixMultiplier *= GetEnragedDamageMultiplier();
+
+        if (affixMultiplier != 1.0f)
+        {
+            // Cap the combined affix bonus so Savage + Enraged cannot stack into a one-shot.
+            affixMultiplier = std::min(affixMultiplier, GetMaxAffixDamageMultiplier());
+            damage = std::max<uint32>(1, uint32(float(damage) * affixMultiplier));
+        }
 
         if (!HasAffix(state, NEMESIS_AFFIX_VAMPIRIC))
             return;
 
         uint32 healAmount = std::max<uint32>(1, uint32(float(damage) * GetVampiricHealPct()));
         creature->ModifyHealth(int32(healAmount));
+    }
+
+    void OnUnitDeath(Unit* unit, Unit* /*killer*/) override
+    {
+        if (!unit || !unit->IsCreature())
+            return;
+
+        Creature* creature = unit->ToCreature();
+
+        NemesisState state;
+        if (!TryGetNemesisState(creature, state))
+            return;
+
+        EraseRegenAccumulator(creature);
+        DeleteNemesisState(creature, "dead");
+    }
+
+    void OnUnitEnterEvadeMode(Unit* unit, uint8 /*evadeReason*/) override
+    {
+        if (!unit || !unit->IsCreature())
+            return;
+
+        Creature* creature = unit->ToCreature();
+
+        // Evading strips the creature's auras, so the nemesis visual has to be put back.
+        NemesisState state;
+        if (!TryGetNemesisState(creature, state))
+            return;
+
+        ApplyNemesisVisualAuras(creature, state.rank);
     }
 
     void ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& damage, SpellInfo const* /*spellInfo*/) override
@@ -1967,6 +2444,7 @@ public:
         {
             { "bootstrap", HandleAddonBootstrap, SEC_PLAYER, Console::No },
             { "report", HandleAddonReport, SEC_PLAYER, Console::No },
+            { "top", HandleAddonTop, SEC_PLAYER, Console::No },
             { "sync", HandleAddonSync, SEC_GAMEMASTER, Console::No }
         };
 
@@ -2010,6 +2488,19 @@ public:
         return true;
     }
 
+    static bool HandleAddonTop(ChatHandler* handler)
+    {
+        Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+        if (!player)
+        {
+            handler->PSendSysMessage(GetNemesisString(GetHandlerLocale(handler), NemesisStringId::CMD_NEED_PLAYER_TOP).data());
+            return true;
+        }
+
+        SendNemesisLeaderboard(player);
+        return true;
+    }
+
     static bool HandleAddonReport(ChatHandler* handler, uint64 rawSpawnId)
     {
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
@@ -2028,16 +2519,28 @@ public:
         if (state.lastSeenAt && state.lastSeenAt + GetAddonReportCooldownSeconds() > now)
             return true;
 
-        state.mapId = player->GetMapId();
-        state.zoneId = player->GetZoneId();
-        state.homeX = player->GetPositionX();
-        state.homeY = player->GetPositionY();
-        state.homeZ = player->GetPositionZ();
+        // A sighting is only trusted when the nemesis is actually loaded next to the
+        // reporting player, and the stored position is taken from the creature itself
+        // instead of client-supplied coordinates.
+        Creature* liveCreature = FindLoadedCreatureBySpawnId(player->GetMap(), spawnId);
+        if (!liveCreature)
+            return true;
+
+        float const maxDistance = GetAddonReportMaxDistance();
+        if (maxDistance > 0.0f && player->GetDistance(liveCreature) > maxDistance)
+            return true;
+
+        state.mapId = liveCreature->GetMapId();
+        state.zoneId = liveCreature->GetZoneId();
+        state.homeX = liveCreature->GetPositionX();
+        state.homeY = liveCreature->GetPositionY();
+        state.homeZ = liveCreature->GetPositionZ();
         state.lastSeenAt = now;
 
         {
             std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
             ActiveNemeses[spawnId] = state;
+            SyncHotCount();
         }
         CharacterDatabase.Execute(
             "UPDATE `character_nemesis` SET `map_id` = {}, `zone_id` = {}, `pos_x` = {}, `pos_y` = {}, `pos_z` = {}, `last_seen_at` = {} WHERE `guid` = {}",
@@ -2147,9 +2650,11 @@ public:
 
         state.rank = rank;
         state.targetGuid = player->GetGUID().GetCounter();
+        AddNemesisVictim(state, player->GetGUID().GetCounter());
         RollAffixes(state);
         state.lastSeenAt = uint32(GameTime::GetGameTime().count());
         SaveNemesisState(target, state);
+        PersistNemesisVictim(target->GetSpawnId(), player->GetGUID().GetCounter());
         ApplyNemesisState(target, state);
         target->SetFullHealth();
         BroadcastRankFiveNemesisIfPersistent(target, state);
@@ -2315,7 +2820,7 @@ public:
                     temporaryGuids.push_back(guid);
         }
 
-        if (spawnIds.empty())
+        if (spawnIds.empty() && temporaryGuids.empty())
         {
             handler->PSendSysMessage(GetNemesisString(locale, NemesisStringId::CMD_MAPCLEAR_NONE).data());
             return true;
@@ -2350,10 +2855,29 @@ public:
 
     static bool HandleClearAll(ChatHandler* handler)
     {
-        std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
-        EnsureCacheLoaded();
+        std::vector<std::pair<ObjectGuid::LowType, NemesisState>> persistentNemeses;
+        std::vector<std::pair<ObjectGuid, NemesisState>> temporaryNemeses;
 
-        for (auto const& [spawnId, state] : ActiveNemeses)
+        {
+            std::lock_guard<std::recursive_mutex> lock(NemesisStoreMutex);
+            EnsureCacheLoaded();
+
+            persistentNemeses.reserve(ActiveNemeses.size());
+            for (auto const& [spawnId, state] : ActiveNemeses)
+                persistentNemeses.emplace_back(spawnId, state);
+
+            temporaryNemeses.reserve(ActiveTemporaryNemeses.size());
+            for (auto const& [guid, state] : ActiveTemporaryNemeses)
+                temporaryNemeses.emplace_back(guid, state);
+
+            ActiveNemeses.clear();
+            ActiveTemporaryNemeses.clear();
+            RegenTickAccumulators.clear();
+            TemporaryRegenTickAccumulators.clear();
+            SyncHotCount();
+        }
+
+        for (auto const& [spawnId, state] : persistentNemeses)
         {
             Creature* liveCreature = nullptr;
             ForEachOnlinePlayer([&](Player* player)
@@ -2368,7 +2892,7 @@ public:
             BroadcastNemesisRemove(spawnId, "cleared-all");
         }
 
-        for (auto const& [guid, state] : ActiveTemporaryNemeses)
+        for (auto const& [guid, state] : temporaryNemeses)
         {
             ForEachOnlinePlayer([&](Player* player)
             {
@@ -2377,12 +2901,8 @@ public:
             });
         }
 
-        ActiveNemeses.clear();
-        ActiveTemporaryNemeses.clear();
-        RegenTickAccumulators.clear();
-        TemporaryRegenTickAccumulators.clear();
-
         CharacterDatabase.Execute("DELETE FROM `character_nemesis`");
+        CharacterDatabase.Execute("DELETE FROM `character_nemesis_victims`");
         handler->PSendSysMessage(GetNemesisString(GetHandlerLocale(handler), NemesisStringId::CMD_CLEARALL_DONE).data());
         return true;
     }

@@ -94,3 +94,25 @@ L["local-cache"] = "лок. кэш"
 L["server-bootstrap"] = "загрузка"
 L["rank5-broadcast"] = "ранг5"
 L["server-validated"] = "сервер"
+
+L["Previous zone: %s"] = "Предыдущая зона: %s"
+L["Next zone: %s"] = "Следующая зона: %s"
+
+-- Leaderboard
+L["Top"] = "Топ"
+L["Map"] = "Карта"
+L["Top killers this month"] = "Лучшие охотники месяца"
+L["Place  Character  Kills / Revenge / Bounty / Best"] = "Место  Персонаж  Убийств / Месть / Награда / Лучший"
+L["No kills recorded this month."] = "В этом месяце убийств не зафиксировано."
+L["No kills yet this month"] = "В этом месяце убийств пока нет"
+L["Waypoint set: %s"] = "Путевая точка: %s"
+L["Affixes: %s"] = "Аффиксы: %s"
+
+-- Affix descriptions (mirror the module's default configuration)
+L["AFFIX_DESC_VAMPIRIC"] = "Вампиризм: лечится на 25% нанесённого урона."
+L["AFFIX_DESC_SWIFT"] = "Стремительность: атакует на 30% чаще, урон +25%, бег +50%."
+L["AFFIX_DESC_JUGGERNAUT"] = "Несокрушимость: иммунитет к замедлению, руту, страху, стану, очарованию, сну, полиморфу и отбрасыванию."
+L["AFFIX_DESC_SAVAGE"] = "Свирепость: урон +25%."
+L["AFFIX_DESC_SPELLWARD"] = "Антимагия: получаемый магический урон -30%."
+L["AFFIX_DESC_ENRAGED"] = "Ярость: урон +50% при здоровье ниже 30%."
+L["AFFIX_DESC_REGEN"] = "Регенерация: восстанавливает 3% здоровья каждые 5 секунд."

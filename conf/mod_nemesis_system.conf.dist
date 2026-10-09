@@ -44,6 +44,20 @@ NemesisSystem.CitySiegeIntegration.Chance = 10.0
 NemesisSystem.MaxRank = 5
 
 #
+#    NemesisSystem.HealthScalingReferenceLevel
+#        Description: Level at which the full health ladder applies. Below it the health
+#                     bonus is scaled towards 1.0, because base creature health grows far
+#                     slower than player damage across the levels and a flat multiplier
+#                     makes low-level nemeses unbeatable.
+#                     Example: rank 5 on a level 40 mob is x6.0 at reference 0, but x3.5
+#                     at reference 80.
+#                     Set to 0 to always use the full multiplier (old behaviour).
+#        Default:     80
+#
+
+NemesisSystem.HealthScalingReferenceLevel = 80
+
+#
 #    NemesisSystem.MinCreatureLevel
 #        Description: Minimum creature level eligible to become a nemesis.
 #        Default:     1
@@ -177,6 +191,16 @@ NemesisSystem.RevengeRewardCount = 1
 NemesisSystem.RevengeRewardItemPerRankBonus = 0
 
 #
+#    NemesisSystem.RevengeRewardGoldPerRankLevel
+#        Description: Copper granted per nemesis rank per creature level on a
+#                     revenge kill, split across nearby recipients and scaled by
+#                     the level difference. Set to 0 to disable gold.
+#        Default:     25
+#
+
+NemesisSystem.RevengeRewardGoldPerRankLevel = 25
+
+#
 #    NemesisSystem.BountyRewardItem
 #        Description: Optional item reward granted when another player kills a
 #                     nemesis that targets someone else.
@@ -202,6 +226,45 @@ NemesisSystem.BountyRewardCount = 1
 NemesisSystem.BountyRewardItemPerRankBonus = 0
 
 #
+#    NemesisSystem.BountyRewardGoldPerRankLevel
+#        Description: Copper granted per nemesis rank per creature level on a
+#                     bounty kill, split across nearby recipients and scaled by
+#                     the level difference. Set to 0 to disable gold.
+#        Default:     25
+#
+
+NemesisSystem.BountyRewardGoldPerRankLevel = 25
+
+#
+#    NemesisSystem.RewardOverlevelDiffMax
+#        Description: Level difference at which reward scaling reaches zero.
+#                     When the highest eligible recipient is this many levels
+#                     above the nemesis, the kill grants no rewards. Set to 0
+#                     to disable overlevel scaling.
+#        Default:     5
+#
+
+NemesisSystem.RewardOverlevelDiffMax = 5
+
+#
+#    NemesisSystem.RewardUnderlevelDiffMax
+#        Description: Level difference at which underdog scaling reaches its
+#                     maximum multiplier. Set to 0 to disable underdog scaling.
+#        Default:     5
+#
+
+NemesisSystem.RewardUnderlevelDiffMax = 5
+
+#
+#    NemesisSystem.RewardUnderdogMaxMultiplier
+#        Description: Maximum reward multiplier granted when the highest
+#                     eligible recipient is well below the nemesis level.
+#        Default:     2.0
+#
+
+NemesisSystem.RewardUnderdogMaxMultiplier = 2.0
+
+#
 #    NemesisSystem.EnragedHealthPctThreshold
 #        Description: Health percentage at or below which the Enraged affix becomes active.
 #        Default:     30.0
@@ -216,6 +279,38 @@ NemesisSystem.EnragedHealthPctThreshold = 30.0
 #
 
 NemesisSystem.EnragedDamageMultiplier = 1.50
+
+#
+#    NemesisSystem.MaxAffixDamageMultiplier
+#        Description: Upper bound for the combined damage bonus of the Savage and
+#                     Enraged affixes. Prevents the two from stacking into
+#                     one-shot damage at high ranks.
+#        Default:     2.50
+#
+
+NemesisSystem.MaxAffixDamageMultiplier = 2.50
+
+#
+#    NemesisSystem.VampiricHealPct
+#        Description: Percent of the damage a Vampiric nemesis actually deals that is
+#                     returned to it as healing. Combined with the Regenerating affix this
+#                     is the strongest defensive pair in the system.
+#        Default:     25.0
+#
+
+NemesisSystem.VampiricHealPct = 25.0
+
+#
+#    NemesisSystem.SwiftDamageMultiplier
+#        Description: Damage bonus for the Swift affix. The core scales per-swing damage
+#                     by attackTime/1000, so swinging faster alone leaves damage per
+#                     second unchanged; this factor restores the lost damage and then
+#                     some, which turns Swift into a real damage affix.
+#                     Set to 1.0 to make Swift purely a movement-speed affix again.
+#        Default:     1.25
+#
+
+NemesisSystem.SwiftDamageMultiplier = 1.25
 
 #
 #    NemesisSystem.RegenerationIntervalMs
@@ -342,3 +437,37 @@ NemesisSystem.AddonBootstrapMaxEntries = 100
 #
 
 NemesisSystem.AddonReportCooldownSeconds = 30
+
+#
+#    NemesisSystem.AddonReportMaxDistance
+#        Description: Maximum distance in yards between the reporting player and
+#                     the nemesis creature for an addon sighting to be accepted.
+#                     Sightings are rejected when the nemesis is not loaded next
+#                     to the player, which stops clients from relocating nemesis
+#                     markers from anywhere on the map.
+#                     Set to 0 to disable the distance check.
+#        Default:     150.0
+#
+
+NemesisSystem.AddonReportMaxDistance = 150.0
+
+#
+#    NemesisSystem.LeaderboardMaxEntries
+#        Description: How many rows the addon's monthly leaderboard request returns.
+#        Default:     10
+#
+
+NemesisSystem.LeaderboardMaxEntries = 10
+
+#
+#    NemesisSystem.RankUpFlashVisual
+#        Description: SpellVisualKit id played on the creature the moment it gains a rank,
+#                     so nearby players notice the promotion instead of only reading it in
+#                     chat. Preview ids in game with ".debug play visual <id>" (needs the
+#                     debug cosmetic permission).
+#                     Set to 0 to disable the flash.
+#                     Known-valid examples: 179 (directed spell cast glow), 362 (salute).
+#        Default:     179
+#
+
+NemesisSystem.RankUpFlashVisual = 179

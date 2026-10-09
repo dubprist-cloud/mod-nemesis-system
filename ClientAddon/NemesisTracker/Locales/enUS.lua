@@ -94,3 +94,25 @@ L["local-cache"] = true
 L["server-bootstrap"] = true
 L["rank5-broadcast"] = true
 L["server-validated"] = true
+
+L["Previous zone: %s"] = true
+L["Next zone: %s"] = true
+
+-- Leaderboard
+L["Top"] = true
+L["Map"] = true
+L["Top killers this month"] = true
+L["Place  Character  Kills / Revenge / Bounty / Best"] = true
+L["No kills recorded this month."] = true
+L["No kills yet this month"] = true
+L["Waypoint set: %s"] = true
+L["Affixes: %s"] = true
+
+-- Affix descriptions (mirror the module's default configuration)
+L["AFFIX_DESC_VAMPIRIC"] = true
+L["AFFIX_DESC_SWIFT"] = true
+L["AFFIX_DESC_JUGGERNAUT"] = true
+L["AFFIX_DESC_SAVAGE"] = true
+L["AFFIX_DESC_SPELLWARD"] = true
+L["AFFIX_DESC_ENRAGED"] = true
+L["AFFIX_DESC_REGEN"] = true

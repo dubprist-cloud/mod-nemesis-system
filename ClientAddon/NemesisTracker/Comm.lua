@@ -375,6 +375,64 @@ function NT:ParseServerPayload(payload)
     end
     if opcode == "REMOVE" then
         self:RemoveNemesis(tonumber(fields[3]), fields[4])
+        return
+    end
+
+    if opcode == "AFFIX" then
+        -- V2:AFFIX:bit:name:description. The description is last because it may contain
+        -- colons, so the remaining fields are joined back together.
+        local bit = tonumber(fields[3])
+        if bit then
+            self.data.affixCatalog[bit] = {
+                name = fields[4] or "",
+                desc = joinFields(fields, 5, ":"),
+            }
+        end
+        return
+    end
+
+    if opcode == "TOP_BEGIN" then
+        self.data.top = {}
+        self.data.topReceived = false
+        self.data.topSelf = nil
+        if self.UI then
+            self.UI:RefreshTop()
+        end
+        return
+    end
+
+    if opcode == "TOP_ENTRY" then
+        -- V2:TOP_ENTRY:place:name:kills:revenge:bounty:bestRank
+        self.data.top[#self.data.top + 1] = {
+            rank = tonumber(fields[3]) or 0,
+            name = fields[4] or "",
+            kills = tonumber(fields[5]) or 0,
+            revenge = tonumber(fields[6]) or 0,
+            bounty = tonumber(fields[7]) or 0,
+            best = tonumber(fields[8]) or 0,
+        }
+        return
+    end
+
+    if opcode == "TOP_SELF" then
+        -- V2:TOP_SELF:place:name:kills:revenge:bounty:bestRank. Sent only when the requester
+        -- is outside the returned top, so the pane can pin them to the bottom.
+        self.data.topSelf = {
+            place = tonumber(fields[3]) or 0,
+            name = fields[4] or "",
+            kills = tonumber(fields[5]) or 0,
+            revenge = tonumber(fields[6]) or 0,
+            bounty = tonumber(fields[7]) or 0,
+            best = tonumber(fields[8]) or 0,
+        }
+        return
+    end
+
+    if opcode == "TOP_END" then
+        self.data.topReceived = true
+        if self.UI then
+            self.UI:RefreshTop()
+        end
     end
 end
 
@@ -484,7 +542,7 @@ function NT:ReportSighting(spawnId)
     end
 
     local now = self:GetNow()
-    local throttle = self.db.reportThrottleSeconds or 20
+    local throttle = self.db.reportThrottleSeconds or 30
     local lastReportAt = self.data.lastReportBySpawnId[spawnId] or 0
     if lastReportAt + throttle > now then
         return

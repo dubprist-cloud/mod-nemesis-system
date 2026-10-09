@@ -1,5 +1,11 @@
 # Nemesis Companion Addon Specification
 
+> **Status: design document, kept for reference.** The addon shipped as `ClientAddon/NemesisTracker/`,
+> and the wire contract it actually uses is the `V2:*` family documented in `README.md` under
+> "Companion Addon". Sections below that describe `SNAPSHOT_*`, `UPSERT` or `PING/PONG` are the
+> original proposal and were superseded during implementation. Where the two disagree, the README
+> and the code win.
+
 ## Purpose
 
 The Nemesis Companion Addon is a World of Warcraft 3.3.5a client addon for `mod-nemesis-system`.

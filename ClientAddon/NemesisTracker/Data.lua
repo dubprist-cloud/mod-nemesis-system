@@ -90,13 +90,25 @@ function NT:GetZoneKey(zoneId, zoneName)
 end
 
 function NT:GetLocalizedZoneName(zoneId, fallback)
-    if zoneId and GetAreaInfo then
-        local areaName = GetAreaInfo(zoneId)
-        if areaName then
-            return areaName
-        end
+    -- The server already localizes the zone name for the requesting player.
+    -- The 3.3.5a client has no zone-id lookup, and GetAreaInfo() describes the
+    -- player's current area only, so it must not be used for a remote zone.
+    if fallback and fallback ~= "" then
+        return fallback
     end
-    return fallback or L["Unknown"]
+
+    return NT.L["Unknown"]
+end
+
+-- Monthly leaderboard. The server owns the data (character_nemesis_monthly_kills),
+-- so the pane is filled from the addon message family V2:TOP_*.
+function NT:RequestLeaderboard()
+    self.data.top = {}
+    self.data.topReceived = false
+    if self.UI then
+        self.UI:RefreshTop()
+    end
+    self:SendServerCommand(".nemesis addon top")
 end
 
 function NT:GetNow()
@@ -302,10 +314,13 @@ function NT:EnsureDisplayedZone()
     return zones[1].zoneId, zones[1].zoneName
 end
 
-function NT:ChangeDisplayedZone(delta)
+-- Index of the zone `delta` steps away from the displayed one, wrapping around.
+-- Returns nil when there is nothing to switch between, so callers can tell "no other
+-- zone" apart from "moved to the same zone".
+function NT:GetDisplayedZoneIndex(delta)
     local zones = self:GetAvailableZones()
     if #zones == 0 then
-        return
+        return nil, zones
     end
 
     local currentKey = zoneKey(self.data.displayedZoneId, self.data.displayedZoneName)
@@ -317,14 +332,24 @@ function NT:ChangeDisplayedZone(delta)
         end
     end
 
-    local targetIndex = currentIndex + delta
+    local targetIndex = currentIndex + (delta or 0)
     if targetIndex < 1 then
         targetIndex = #zones
     elseif targetIndex > #zones then
         targetIndex = 1
     end
 
-    self:SelectDisplayedZone(zones[targetIndex].zoneId, zones[targetIndex].zoneName, zones[targetIndex].zoneKey)
+    return targetIndex, zones
+end
+
+function NT:ChangeDisplayedZone(delta)
+    local targetIndex, zones = self:GetDisplayedZoneIndex(delta)
+    if not targetIndex then
+        return
+    end
+
+    local zone = zones[targetIndex]
+    self:SelectDisplayedZone(zone.zoneId, zone.zoneName, zone.zoneKey)
 end
 
 function NT:SetFilter(filter)

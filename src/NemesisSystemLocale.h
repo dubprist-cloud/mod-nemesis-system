@@ -10,6 +10,7 @@ enum class NemesisStringId : uint32
     CMD_NEED_PLAYER_BOOTSTRAP,
     CMD_NEED_PLAYER_REPORT,
     CMD_NEED_PLAYER_SYNC,
+    CMD_NEED_PLAYER_TOP,
     CMD_SELECT_CREATURE,
     CMD_DEBUG_HEADER,
     CMD_NOT_A_NEMESIS,
@@ -56,6 +57,16 @@ enum class NemesisStringId : uint32
     AFFIX_REGEN,
     AFFIX_NONE,
 
+    // Affix descriptions. Sent to the addon as a catalogue so the client never has to
+    // hardcode values that live in the module configuration.
+    AFFIX_DESC_VAMPIRIC,
+    AFFIX_DESC_SWIFT,
+    AFFIX_DESC_JUGGERNAUT,
+    AFFIX_DESC_SAVAGE,
+    AFFIX_DESC_SPELLWARD,
+    AFFIX_DESC_ENRAGED,
+    AFFIX_DESC_REGEN,
+
     // Announcement templates
     ANNOUNCE_RANK_UP,
     ANNOUNCE_CREATED,
@@ -72,6 +83,7 @@ inline std::string_view GetNemesisString(LocaleConstant locale, NemesisStringId 
         /* CMD_NEED_PLAYER_BOOTSTRAP */  "You must be logged in as a player to request addon bootstrap data.",
         /* CMD_NEED_PLAYER_REPORT */     "You must be logged in as a player to report addon sightings.",
         /* CMD_NEED_PLAYER_SYNC */       "You must be logged in as a player to sync addon data.",
+        /* CMD_NEED_PLAYER_TOP */        "You must be logged in as a player to request the leaderboard.",
         /* CMD_SELECT_CREATURE */        "You must select a creature.",
         /* CMD_DEBUG_HEADER */           "Nemesis target: {} (entry {}, spawn {}, map {})",
         /* CMD_NOT_A_NEMESIS */          "Selected creature is not an active nemesis.",
@@ -117,6 +129,14 @@ inline std::string_view GetNemesisString(LocaleConstant locale, NemesisStringId 
         /* AFFIX_REGEN */                "Regenerating",
         /* AFFIX_NONE */                 "None",
 
+        /* AFFIX_DESC_VAMPIRIC */        "Heals for {:.0f}% of the damage it deals.",
+        /* AFFIX_DESC_SWIFT */           "Attacks {:.0f}% faster, damage +{:.0f}%, movement speed +{:.0f}%.",
+        /* AFFIX_DESC_JUGGERNAUT */      "Immune to snare, root, fear, stun, charm, sleep, polymorph and knockback.",
+        /* AFFIX_DESC_SAVAGE */          "Damage +{:.0f}%.",
+        /* AFFIX_DESC_SPELLWARD */       "Spell damage taken -{:.0f}%.",
+        /* AFFIX_DESC_ENRAGED */         "Damage +{:.0f}% below {:.0f}% health.",
+        /* AFFIX_DESC_REGEN */           "Restores {:.1f}% of maximum health every {:.0f} seconds.",
+
         /* ANNOUNCE_RANK_UP */           "[Nemesis]: {} has reached rank {} at ({}). Affixes: {}.",
         /* ANNOUNCE_CREATED */           "[Nemesis]: {} has become a nemesis after slaying {} at ({}). Affixes: {}.",
         /* ANNOUNCE_REVENGE */           "[Nemesis]: {} claimed revenge on {} at rank {} near ({}).",
@@ -128,6 +148,7 @@ inline std::string_view GetNemesisString(LocaleConstant locale, NemesisStringId 
         /* CMD_NEED_PLAYER_BOOTSTRAP */  "Вы должны войти в игру как игрок, чтобы запросить данные аддона.",
         /* CMD_NEED_PLAYER_REPORT */     "Вы должны войти в игру как игрок, чтобы отправить сообщение аддона.",
         /* CMD_NEED_PLAYER_SYNC */       "Вы должны войти в игру как игрок, чтобы синхронизировать аддон.",
+        /* CMD_NEED_PLAYER_TOP */        "Вы должны войти в игру как игрок, чтобы запросить таблицу лидеров.",
         /* CMD_SELECT_CREATURE */        "Вы должны выбрать существо.",
         /* CMD_DEBUG_HEADER */           "Цель немизиды: {} (entry {}, spawn {}, map {})",
         /* CMD_NOT_A_NEMESIS */          "Выбранное существо не является активной немизидой.",
@@ -172,6 +193,14 @@ inline std::string_view GetNemesisString(LocaleConstant locale, NemesisStringId 
         /* AFFIX_ENRAGED */              "Разъярённый",
         /* AFFIX_REGEN */                "Регенерирующий",
         /* AFFIX_NONE */                 "Нет",
+
+        /* AFFIX_DESC_VAMPIRIC */        "Лечится на {:.0f}% нанесённого урона.",
+        /* AFFIX_DESC_SWIFT */           "Атакует на {:.0f}% чаще, урон +{:.0f}%, скорость бега +{:.0f}%.",
+        /* AFFIX_DESC_JUGGERNAUT */      "Иммунитет к замедлению, руту, страху, стану, очарованию, сну, полиморфу и отбрасыванию.",
+        /* AFFIX_DESC_SAVAGE */          "Урон +{:.0f}%.",
+        /* AFFIX_DESC_SPELLWARD */       "Получаемый магический урон -{:.0f}%.",
+        /* AFFIX_DESC_ENRAGED */         "Урон +{:.0f}% при здоровье ниже {:.0f}%.",
+        /* AFFIX_DESC_REGEN */           "Восстанавливает {:.1f}% здоровья каждые {:.0f} секунд.",
 
         /* ANNOUNCE_RANK_UP */           "[Немизида]: {} достиг(ла) ранга {} в ({}). Аффиксы: {}.",
         /* ANNOUNCE_CREATED */           "[Немизида]: {} стал(а) немизидой, убив {} в ({}). Аффиксы: {}.",

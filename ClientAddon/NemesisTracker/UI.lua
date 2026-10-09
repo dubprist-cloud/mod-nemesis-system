@@ -5,15 +5,30 @@ NT.UI = NT.UI or {}
 local UI = NT.UI
 local L = NT.L
 
+-- ------------------------------------------------------------------ palette
+-- Same palette as the Guild Hegemony and Battle Pass windows, so the three
+-- addons read as one product.
+local GOLD    = { 0.72, 0.58, 0.25, 0.80 }
+local GOLD_HI = { 0.95, 0.78, 0.35, 1.00 }
+local DARK    = { 0.04, 0.04, 0.065, 0.95 }
+local CARD    = { 0.06, 0.06, 0.09, 1.00 }
+local TEXT    = { 0.90, 0.90, 0.92 }
+local MUTED   = { 0.55, 0.55, 0.60 }
+
+-- A plain white 1px texture, tinted per use. The usual candidates on this client
+-- render as a solid green "not loaded" rectangle.
+local WHITE = "Interface\\ChatFrame\\ChatFrameBackground"
+
 local DEFAULT_ROW_HEIGHT = 48
 local COMPACT_ROW_HEIGHT = 38
 local MAX_ROW_COUNT = 9
+-- The "public" relation is deliberately not offered as a button; the unfiltered
+-- "All" view already covers it. Dropping it here also narrows the control row.
 local FILTERS = {
     { key = "all", label = L["All"] },
     { key = "own", label = L["Own"] },
     { key = "party", label = L["Party"] },
     { key = "guild", label = L["Guild"] },
-    { key = "public", label = L["Public"] },
 }
 
 local SCOPES = {
@@ -25,6 +40,14 @@ local MAP_VERTICAL_STRETCH = 1.14
 local MAP_HORIZONTAL_STRETCH = 1.03
 local MAP_MARKER_Y_LIFT = 0.08
 local MAP_MARKER_X_LIFT = 0.02
+
+-- The window is fixed-size: the control row and the map are laid out for exactly
+-- this box, so resizing is disabled rather than letting the panels drift.
+local WINDOW_W = 860
+local WINDOW_H = 520
+local CONTROL_Y = -40        -- the single row of controls, above the map
+local CONTENT_Y = -68        -- list and map both start here
+local LIST_W = 256
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -44,16 +67,199 @@ local function modulo(value, divisor)
     return value - math.floor(value / divisor) * divisor
 end
 
-local function createBackdrop(frame)
-    frame:SetBackdrop({
-        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
-    frame:SetBackdropColor(0, 0, 0, 0.9)
+-- Gold 1px border with a dark interior. The two textures MUST live in separate
+-- layers: on 3.3.5a two textures in one layer do not reliably draw in declaration
+-- order, which renders a bordered panel as a solid gold slab.
+-- borderAlpha lets a nested panel (the map, list rows) use a quieter rim.
+local function createBackdrop(frame, borderAlpha)
+    local bg = frame:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(true)
+    bg:SetTexture(WHITE)
+    bg:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], borderAlpha or 0.80)
+    frame.Bg = bg
+
+    local inner = frame:CreateTexture(nil, "BORDER")
+    inner:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -1)
+    inner:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1)
+    inner:SetTexture(WHITE)
+    inner:SetVertexColor(DARK[1], DARK[2], DARK[3], DARK[4])
+    frame.Inner = inner
+
+    -- Compatibility shims: the existing call sites still use the SetBackdrop API.
+    function frame:SetBackdropColor(r, g, b, a)
+        self.Inner:SetVertexColor(r or 0, g or 0, b or 0, a or 1)
+    end
+    function frame:SetBackdropBorderColor(r, g, b, a)
+        self.Bg:SetVertexColor(r or 0, g or 0, b or 0, a or 1)
+    end
+
+    return frame
+end
+
+-- A button in the shared chrome style. It carries its own SetText so every
+-- existing `button:SetText(...)` call site keeps working.
+--
+-- Enable/Disable are overridden because the tracker uses Disable() for two very
+-- different meanings: on the filter/scope rows it marks the ACTIVE choice (which
+-- should read as highlighted), while on the page arrows it means "no further
+-- page" (which should read as unavailable). Buttons opt into the first meaning
+-- with `toggleStyle = true`.
+local function makeButton(parent, text, w, h, tooltipFn)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetWidth(w or 90)
+    b:SetHeight(h or 22)
+
+    local bg = b:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(true)
+    bg:SetTexture(WHITE)
+    b.Bg = bg
+
+    local border = b:CreateTexture(nil, "BORDER")
+    border:SetPoint("TOPLEFT", b, "TOPLEFT", 1, -1)
+    border:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -1, 1)
+    border:SetTexture(WHITE)
+    b.Border = border
+
+    local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fs:SetPoint("CENTER", b, "CENTER", 0, 0)
+    fs:SetTextColor(TEXT[1], TEXT[2], TEXT[3])
+    fs:SetText(text or "")
+    b.Text = fs
+
+    local function Look(active, hover)
+        if active then
+            bg:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.40)
+            border:SetVertexColor(GOLD_HI[1], GOLD_HI[2], GOLD_HI[3], 0.95)
+        elseif hover then
+            bg:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.35)
+            border:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.90)
+        else
+            bg:SetVertexColor(DARK[1], DARK[2], DARK[3], 0.95)
+            border:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.65)
+        end
+        fs:SetTextColor(TEXT[1], TEXT[2], TEXT[3])
+    end
+
+    local function LookUnavailable()
+        bg:SetVertexColor(DARK[1], DARK[2], DARK[3], 0.55)
+        border:SetVertexColor(MUTED[1], MUTED[2], MUTED[3], 0.30)
+        fs:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
+    end
+
+    function b:SetText(value)
+        self.Text:SetText(value or "")
+    end
+
+    local baseEnable, baseDisable = b.Enable, b.Disable
+    function b:Enable()
+        if baseEnable then baseEnable(self) end
+        Look(false, false)
+    end
+    function b:Disable()
+        if baseDisable then baseDisable(self) end
+        if self.toggleStyle then
+            Look(true, false)
+        else
+            LookUnavailable()
+        end
+    end
+
+    -- Toggle the look WITHOUT disabling. A disabled Button stops receiving mouse input
+    -- on this client, so disabling a toggle made it impossible to click a second time.
+    function b:SetActive(on)
+        self.active = on and true or false
+        Look(self.active, false)
+    end
+
+    Look(false, false)
+    b:SetScript("OnEnter", function(self)
+        Look(not self:IsEnabled(), true)
+        if tooltipFn then
+            local line = tooltipFn()
+            if line then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(line)
+                GameTooltip:Show()
+            end
+        end
+    end)
+    b:SetScript("OnLeave", function(self)
+        Look(not self:IsEnabled(), false)
+        if tooltipFn then
+            GameTooltip:Hide()
+        end
+    end)
+
+    return b
+end
+
+-- Affix bits as the server packs them into affixMask. Descriptions mirror the
+-- module's default configuration; the server does not ship them per nemesis.
+local AFFIX_DESCRIPTIONS = {
+    { bit = 1,  key = "AFFIX_DESC_VAMPIRIC" },
+    { bit = 2,  key = "AFFIX_DESC_SWIFT" },
+    { bit = 4,  key = "AFFIX_DESC_JUGGERNAUT" },
+    { bit = 8,  key = "AFFIX_DESC_SAVAGE" },
+    { bit = 16, key = "AFFIX_DESC_SPELLWARD" },
+    { bit = 32, key = "AFFIX_DESC_ENRAGED" },
+    { bit = 64, key = "AFFIX_DESC_REGEN" },
+}
+
+-- 3.3.5a has the bit library, but plain arithmetic keeps this independent of it.
+local function hasAffixBit(mask, bit)
+    return (mask or 0) % (bit * 2) >= bit
+end
+
+-- Optional waypoint hand-off. TomTom is NOT part of the client, so this stays a
+-- no-op unless the player installs it; the coordinates are printed to chat anyway.
+local function TrySetWaypoint(mapId, zoneId, x, y, title)
+    if not TomTom then
+        return false
+    end
+
+    -- TomTom's signature differs between its WotLK releases, so try both shapes.
+    if TomTom.AddZWaypoint then
+        if pcall(TomTom.AddZWaypoint, TomTom, mapId, zoneId, x, y, title, false) then
+            return true
+        end
+    end
+
+    if TomTom.AddWaypoint then
+        if pcall(TomTom.AddWaypoint, TomTom, mapId, x, y, { title = title, from = "NemesisTracker" }) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function AnnounceWaypoint(nemesis)
+    if not nemesis then
+        return
+    end
+
+    local zoneName = NT:GetLocalizedZoneName(nemesis.zoneId, nemesis.zoneName)
+    local title = string.format("%s - %s", nemesis.name or L["Nemesis"], zoneName)
+    local x, y, z = nemesis.x or 0, nemesis.y or 0, nemesis.z or 0
+
+    if TrySetWaypoint(nemesis.mapId or 0, nemesis.zoneId or 0, x, y, title) then
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Waypoint set: %s"], title))
+        return
+    end
+
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Nemesis waypoint: %s - %s (%.1f, %.1f, %.1f)"], nemesis.name or L["Nemesis"], zoneName, x, y, z))
+end
+
+-- Lays controls out left to right inside one row: every new frame is anchored to
+-- the right of the previous one, so the row never leaves a gap when a control is
+-- added or removed. lastControl is just a cursor stored on the row frame.
+local function placeControl(row, frame, gap)
+    if row.lastControl then
+        frame:SetPoint("LEFT", row.lastControl, "RIGHT", gap, 0)
+    else
+        frame:SetPoint("LEFT", row, "LEFT", 0, 0)
+    end
+    row.lastControl = frame
 end
 
 local function relationColor(relation)
@@ -334,10 +540,6 @@ function UI:RefreshStatus()
             end
         end
     end
-
-    if self.searchBox and self.searchBox:GetText() ~= (NT.data.currentSearch or "") then
-        self.searchBox:SetText(NT.data.currentSearch or "")
-    end
 end
 
 function UI:RefreshList()
@@ -353,14 +555,18 @@ function UI:RefreshList()
             row.name:SetTextColor(r, g, b)
             row.name:SetText(nemesis.name)
             row.rank:SetText(string.format(L["R%d"], nemesis.rank or 1))
+            -- The number is the rank, the colour is the computed threat: it folds in the
+            -- rank, the affix count and the level difference, so it reads at a glance.
+            local threatR, threatG, threatB = threatColor(nemesis.threatClass)
+            row.rank:SetTextColor(threatR, threatG, threatB)
             row.zone:SetText(NT:GetLocalizedZoneName(nemesis.zoneId, nemesis.zoneName))
             row.lastSeen:SetText(self:FormatLastSeen(nemesis.lastSeenAt))
             local alpha = NT:GetVisibilityAlpha(nemesis)
             row:SetAlpha(alpha)
             if NT.data.selectedSpawnId == nemesis.spawnId then
-                row:SetBackdropColor(0.25, 0.25, 0.35, 0.85)
+                row:SetBackdropColor(0.21, 0.17, 0.09, 0.95)
             else
-                row:SetBackdropColor(0.08, 0.08, 0.08, 0.75)
+                row:SetBackdropColor(CARD[1], CARD[2], CARD[3], 0.92)
             end
         else
             row.spawnId = nil
@@ -372,6 +578,154 @@ function UI:RefreshList()
 end
 
 function UI:RefreshDetails()
+end
+
+local TOP_ROWS = 10
+
+-- The own line is pinned to the bottom of the pane, under a separator, so it stays put no
+-- matter how many rows the top returned. `place` is 0 when the player has not killed
+-- anything this month (or when the server could not work out a position).
+function UI:RefreshTopSelf()
+    if not self.topSelfRow then
+        return
+    end
+
+    local me = NT.data.topSelf
+    if not me then
+        self.topSelfRow:Hide()
+        self.topSelfLine:Hide()
+        return
+    end
+
+    local place = tonumber(me.place) or 0
+    local kills = tonumber(me.kills) or 0
+    local revenge = tonumber(me.revenge) or 0
+    local bounty = tonumber(me.bounty) or 0
+    local best = tonumber(me.best) or 0
+
+    if place > 0 then
+        self.topSelfRow.place:SetText(place .. ".")
+    else
+        self.topSelfRow.place:SetText("-")
+    end
+    self.topSelfRow.name:SetText(me.name or "")
+
+    if kills == 0 and revenge == 0 and bounty == 0 and best == 0 then
+        self.topSelfRow.stats:SetText(L["No kills yet this month"])
+    else
+        self.topSelfRow.stats:SetText(string.format("%d / %d / %d / R%d", kills, revenge, bounty, best))
+    end
+
+    -- Ranked players glow gold; an unranked line stays muted so it reads as "not in the top".
+    local color = place > 0 and GOLD_HI or MUTED
+    self.topSelfRow.place:SetTextColor(color[1], color[2], color[3])
+    self.topSelfRow.name:SetTextColor(color[1], color[2], color[3])
+    self.topSelfRow.stats:SetTextColor(color[1], color[2], color[3])
+
+    self.topSelfRow:Show()
+    self.topSelfLine:Show()
+end
+
+function UI:RefreshTop()
+    if not self.topPanel then
+        return
+    end
+
+    local entries = NT.data.top or {}
+    local playerName = UnitName("player")
+
+    for index = 1, TOP_ROWS do
+        local row = self.topRows[index]
+        if not row then
+            row = CreateFrame("Frame", nil, self.topPanel)
+            row:SetHeight(18)
+            row:SetPoint("TOPLEFT", self.topPanel, "TOPLEFT", 12, -52 - (index - 1) * 18)
+            row:SetPoint("TOPRIGHT", self.topPanel, "TOPRIGHT", -12, -52 - (index - 1) * 18)
+
+            row.place = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            row.place:SetPoint("LEFT", row, "LEFT", 0, 0)
+            row.place:SetWidth(22)
+            row.place:SetJustifyH("LEFT")
+
+            row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            row.name:SetPoint("LEFT", row.place, "RIGHT", 4, 0)
+            row.name:SetWidth(140)
+            row.name:SetJustifyH("LEFT")
+
+            row.stats = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.stats:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+            row.stats:SetWidth(160)
+            row.stats:SetJustifyH("RIGHT")
+
+            -- Remember the template colours so the own-row highlight can be undone.
+            row.nameR, row.nameG, row.nameB = row.name:GetTextColor()
+            row.statsR, row.statsG, row.statsB = row.stats:GetTextColor()
+
+            self.topRows[index] = row
+        end
+
+        local entry = entries[index]
+        if entry then
+            row.place:SetText(string.format("%d.", entry.rank or index))
+            row.name:SetText(entry.name or "")
+            row.stats:SetText(string.format("%d / %d / %d / R%d", entry.kills or 0, entry.revenge or 0, entry.bounty or 0, entry.best or 0))
+
+            -- When the player is inside the top the server does not send a separate line,
+            -- so mark the row here instead of duplicating it at the bottom.
+            if playerName and entry.name == playerName then
+                row.name:SetTextColor(GOLD_HI[1], GOLD_HI[2], GOLD_HI[3])
+                row.stats:SetTextColor(GOLD_HI[1], GOLD_HI[2], GOLD_HI[3])
+            else
+                row.name:SetTextColor(row.nameR or 1, row.nameG or 1, row.nameB or 1)
+                row.stats:SetTextColor(row.statsR or 1, row.statsG or 1, row.statsB or 1)
+            end
+
+            row:Show()
+        else
+            row:Hide()
+        end
+    end
+
+    self:RefreshTopSelf()
+
+    if #entries == 0 then
+        self.topEmpty:Show()
+    else
+        self.topEmpty:Hide()
+    end
+end
+
+function UI:ToggleLeaderboard()
+    self.topShown = not self.topShown
+
+    if self.mapPanel then
+        if self.topShown then
+            self.mapPanel:Hide()
+        else
+            self.mapPanel:Show()
+        end
+    end
+
+    if self.topPanel then
+        if self.topShown then
+            self.topPanel:Show()
+            self:RefreshTop()
+        else
+            self.topPanel:Hide()
+        end
+    end
+
+    if self.topButton then
+        -- SetActive, not Disable: the button has to stay clickable to switch back.
+        self.topButton:SetActive(self.topShown)
+        -- The label names the pane the click will bring up, so the button doubles as its own
+        -- "back" affordance: it reads "Map" while the leaderboard is open.
+        self.topButton:SetText(self.topShown and L["Map"] or L["Top"])
+    end
+
+    if self.topShown then
+        NT:RequestLeaderboard()
+    end
 end
 
 function UI:RefreshMap()
@@ -606,17 +960,21 @@ function UI:CreateMinimapButton()
     b:SetFrameLevel(8)
     b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
-    b:SetBackdrop({
-        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-    })
-    b:SetBackdropColor(0.15, 0.2, 0.4, 0.85)
-    b:SetBackdropBorderColor(0.6, 0.7, 1.0, 0.9)
+    local bg = b:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(true)
+    bg:SetTexture(WHITE)
+    bg:SetVertexColor(DARK[1], DARK[2], DARK[3], 0.95)
+
+    local rim = b:CreateTexture(nil, "BORDER")
+    rim:SetPoint("TOPLEFT", b, "TOPLEFT", 1, -1)
+    rim:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -1, 1)
+    rim:SetTexture(WHITE)
+    rim:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.75)
 
     local text = b:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     text:SetPoint("CENTER")
     text:SetText(L["N"])
-    text:SetTextColor(1, 1, 1)
+    text:SetTextColor(GOLD_HI[1], GOLD_HI[2], GOLD_HI[3])
 
     local border = b:CreateTexture(nil, "OVERLAY")
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
@@ -665,8 +1023,8 @@ function UI:CreateRow(parent, index)
     local row = CreateFrame("Button", nil, parent)
     row:SetHeight(self:GetRowHeight())
     row:SetWidth(250)
-    createBackdrop(row)
-    row:SetBackdropColor(0.08, 0.08, 0.08, 0.75)
+    createBackdrop(row, 0.22)
+    row:SetBackdropColor(CARD[1], CARD[2], CARD[3], 0.92)
 
     row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     row.name:SetPoint("LEFT", row, "LEFT", 6, 10)
@@ -699,10 +1057,12 @@ function UI:CreateRow(parent, index)
             return
         end
 
-        DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Nemesis waypoint: %s - %s (%.1f, %.1f, %.1f)"], button.nemesis.name or L["Nemesis"], NT:GetLocalizedZoneName(button.nemesis.zoneId, button.nemesis.zoneName), button.nemesis.x or 0, button.nemesis.y or 0, button.nemesis.z or 0))
+        AnnounceWaypoint(button.nemesis)
     end)
 
     row:SetScript("OnEnter", function(button)
+        button.Bg:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.55)
+
         if not button.nemesis then
             return
         end
@@ -711,6 +1071,15 @@ function UI:CreateRow(parent, index)
         GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
         GameTooltip:SetText(nemesis.name or L["Nemesis"])
         GameTooltip:AddLine(string.format(L["Level %d  Rank %d - %s"], nemesis.level or 0, nemesis.rank or 1, L[nemesis.rankTier] or nemesis.rankTier or L["Marked"]), 1, 1, 1)
+        GameTooltip:AddLine(string.format(L["Affixes: %s"], nemesis.affixText or L["None"]), 0.95, 0.82, 0.35)
+        for _, affix in ipairs(AFFIX_DESCRIPTIONS) do
+            if hasAffixBit(nemesis.affixMask, affix.bit) then
+                -- The server builds these from its live configuration; the local locale
+                -- string is only a fallback for the moment before the catalogue arrives.
+                local catalog = NT.data.affixCatalog and NT.data.affixCatalog[affix.bit]
+                GameTooltip:AddLine("  " .. ((catalog and catalog.desc) or L[affix.key]), 0.75, 0.75, 0.82, true)
+            end
+        end
         GameTooltip:AddLine(string.format(L["Relation: %s"], L[nemesis.relation] or nemesis.relation or L["public"]), 0.7, 0.9, 1)
         GameTooltip:AddLine(string.format(L["Reward: %s  Threat: %s"], L[nemesis.rewardClass] or nemesis.rewardClass or L["none"], L[nemesis.threatClass] or nemesis.threatClass or L["low"]), 1, 0.82, 0.2)
         GameTooltip:AddLine(string.format(L["Zone: %s"], NT:GetLocalizedZoneName(nemesis.zoneId, nemesis.zoneName)), 0.85, 0.85, 0.85)
@@ -719,7 +1088,8 @@ function UI:CreateRow(parent, index)
         GameTooltip:Show()
     end)
 
-    row:SetScript("OnLeave", function()
+    row:SetScript("OnLeave", function(button)
+        button.Bg:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.22)
         GameTooltip:Hide()
     end)
 
@@ -727,14 +1097,10 @@ function UI:CreateRow(parent, index)
 end
 
 function UI:CreateFilterButton(parent, index, filterDef)
-    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-    button:SetWidth(54)
-    button:SetHeight(20)
-    if index == 1 then
-        button:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
-    else
-        button:SetPoint("LEFT", self.filterButtons[index - 1], "RIGHT", 4, 0)
-    end
+    local button = makeButton(parent, nil, 54, 20)
+    -- Disable() marks the ACTIVE filter here, so it must read as highlighted.
+    button.toggleStyle = true
+    placeControl(parent, button, index == 1 and 14 or 4)
     button:SetText(filterDef.label)
     button.key = filterDef.key
     button:SetScript("OnClick", function()
@@ -744,14 +1110,9 @@ function UI:CreateFilterButton(parent, index, filterDef)
 end
 
 function UI:CreateScopeButton(parent, index, scopeDef)
-    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-    button:SetWidth(78)
-    button:SetHeight(20)
-    if index == 1 then
-        button:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -24)
-    else
-        button:SetPoint("LEFT", self.scopeButtons[index - 1], "RIGHT", 4, 0)
-    end
+    local button = makeButton(parent, nil, 78, 20)
+    button.toggleStyle = true
+    placeControl(parent, button, index == 1 and 14 or 4)
     button:SetText(scopeDef.label)
     button.key = scopeDef.key
     button:SetScript("OnClick", function()
@@ -802,14 +1163,14 @@ function UI:Create()
     local frame = CreateFrame("Frame", "NemesisTrackerFrame", UIParent)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
+    -- Keeps the tracker above peer DIALOG-level windows (Guild Hegemony, Battle
+    -- Pass) instead of z-fighting with them where they overlap.
+    frame:SetToplevel(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
-    frame:SetResizable(true)
-    frame:SetMinResize(860, 520)
-    frame:SetMaxResize(1400, 1000)
     createBackdrop(frame)
-    frame:SetWidth(NT.db.window.width or 980)
-    frame:SetHeight(NT.db.window.height or 640)
+    frame:SetWidth(WINDOW_W)
+    frame:SetHeight(WINDOW_H)
     frame:SetPoint(NT.db.window.point or "CENTER", UIParent, NT.db.window.relativePoint or "CENTER", NT.db.window.x or 0, NT.db.window.y or 0)
     frame:SetScript("OnDragStart", function(self)
         self:StartMoving()
@@ -822,76 +1183,81 @@ function UI:Create()
         NT.db.window.x = x
         NT.db.window.y = y
     end)
+    -- ESC closes the window: UISpecialFrames resolves the entry through _G, so
+    -- the frame must keep its GLOBAL name.
+    tinsert(UISpecialFrames, "NemesisTrackerFrame")
+
     frame:Hide()
     self.frame = frame
+
+    -- Title strip: a darker band plus a 1px gold rule, matching the other windows.
+    -- ARTWORK, because the interior texture of createBackdrop sits in BORDER.
+    local titleBand = frame:CreateTexture(nil, "ARTWORK")
+    titleBand:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -1)
+    titleBand:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -1, -1)
+    titleBand:SetHeight(31)
+    titleBand:SetTexture(WHITE)
+    titleBand:SetVertexColor(0.10, 0.09, 0.13, 0.85)
+
+    local titleRule = frame:CreateTexture(nil, "ARTWORK", nil, 1)
+    titleRule:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -32)
+    titleRule:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -1, -32)
+    titleRule:SetHeight(1)
+    titleRule:SetTexture(WHITE)
+    titleRule:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.45)
 
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -12)
     title:SetText(L["Nemesis Tracker"])
+    title:SetTextColor(GOLD_HI[1], GOLD_HI[2], GOLD_HI[3])
 
     self.statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     self.statusText:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -44, -16)
+    self.statusText:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
 
-    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
+    local close = makeButton(frame, "X", 20, 20)
+    close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -6, -6)
+    close:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+    close:SetFrameLevel(frame:GetFrameLevel() + 5)
 
-    local sync = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    sync:SetWidth(90)
-    sync:SetHeight(22)
-    sync:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -40)
+    -- Every control lives in this one row, above the map.
+    local controls = CreateFrame("Frame", nil, frame)
+    controls:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, CONTROL_Y)
+    controls:SetWidth(WINDOW_W - 24)
+    controls:SetHeight(22)
+    self.controls = controls
+
+    local sync = makeButton(controls, nil, 90, 22)
     sync:SetText(L["Refresh"])
     sync:SetScript("OnClick", function()
         NT:RefreshFromSources()
     end)
+    placeControl(controls, sync, 0)
 
-    local waypoint = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    waypoint:SetWidth(110)
-    waypoint:SetHeight(22)
-    waypoint:SetPoint("LEFT", sync, "RIGHT", 8, 0)
+    local waypoint = makeButton(controls, nil, 110, 22)
     waypoint:SetText(L["Waypoint"])
     waypoint:SetScript("OnClick", function()
-        local nemesis = NT:GetSelectedNemesis()
-        if not nemesis then
-            return
-        end
-        DEFAULT_CHAT_FRAME:AddMessage(string.format(L["Nemesis waypoint: %s - %s (%.1f, %.1f, %.1f)"], nemesis.name or L["Nemesis"], NT:GetLocalizedZoneName(nemesis.zoneId, nemesis.zoneName), nemesis.x or 0, nemesis.y or 0, nemesis.z or 0))
+        AnnounceWaypoint(NT:GetSelectedNemesis())
     end)
+    placeControl(controls, waypoint, 8)
 
-    local filters = CreateFrame("Frame", nil, frame)
-    filters:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -68)
-    filters:SetWidth(320)
-    filters:SetHeight(72)
     self.filterButtons = {}
     for index, filterDef in ipairs(FILTERS) do
-        self:CreateFilterButton(filters, index, filterDef)
+        self:CreateFilterButton(controls, index, filterDef)
     end
 
     self.scopeButtons = {}
     for index, scopeDef in ipairs(SCOPES) do
-        self:CreateScopeButton(filters, index, scopeDef)
+        self:CreateScopeButton(controls, index, scopeDef)
     end
 
-    self.searchBox = CreateFrame("EditBox", nil, filters, "InputBoxTemplate")
-    self.searchBox:SetAutoFocus(false)
-    self.searchBox:SetWidth(244)
-    self.searchBox:SetHeight(20)
-    self.searchBox:SetPoint("TOPLEFT", filters, "TOPLEFT", 0, -48)
-    self.searchBox:SetText(NT.data.currentSearch or "")
-    self.searchBox:SetScript("OnEscapePressed", function(editBox)
-        editBox:ClearFocus()
-    end)
-    self.searchBox:SetScript("OnEnterPressed", function(editBox)
-        editBox:ClearFocus()
-    end)
-    self.searchBox:SetScript("OnTextChanged", function(editBox, userInput)
-        if userInput then
-            NT:SetSearch(editBox:GetText())
-        end
-    end)
-
+    -- The list starts directly under the control row now that the buttons no
+    -- longer occupy the left column.
     local list = CreateFrame("Frame", nil, frame)
-    list:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -146)
-    list:SetWidth(256)
+    list:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, CONTENT_Y)
+    list:SetWidth(LIST_W)
     list:SetHeight((self:GetRowHeight() + 2) * NT:GetVisibleRows())
     self.list = list
 
@@ -904,7 +1270,7 @@ function UI:Create()
     local mapPanel = CreateFrame("Frame", nil, frame)
     mapPanel:SetPoint("TOPLEFT", list, "TOPRIGHT", 12, 0)
     mapPanel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -12, 14)
-    createBackdrop(mapPanel)
+    createBackdrop(mapPanel, 0.55)
     self.mapPanel = mapPanel
 
     local canvas = CreateFrame("Frame", nil, mapPanel)
@@ -914,102 +1280,142 @@ function UI:Create()
 
     self.zoomText = mapPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     self.zoomText:SetPoint("TOPRIGHT", mapPanel, "TOPRIGHT", -8, -8)
+    self.zoomText:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
 
-    self.prevZoneButton = CreateFrame("Button", nil, mapPanel, "UIPanelButtonTemplate")
-    self.prevZoneButton:SetWidth(22)
-    self.prevZoneButton:SetHeight(20)
+    -- The map markers are children of the canvas, which puts them one frame level ABOVE
+    -- anything parented to mapPanel. A marker landing on the strip where these controls
+    -- sit would therefore swallow the click and the arrows looked dead. Force them up.
+    local mapControlLevel = mapPanel:GetFrameLevel() + 3
+
+    self.prevZoneButton = makeButton(mapPanel, nil, 22, 20, function()
+        local index, zones = NT:GetDisplayedZoneIndex(-1)
+        if index and zones and #zones > 1 then
+            return string.format(L["Previous zone: %s"], zones[index].zoneName or L["Unknown"])
+        end
+        return nil
+    end)
     self.prevZoneButton:SetPoint("TOPLEFT", mapPanel, "TOPLEFT", 8, -6)
+    self.prevZoneButton:SetFrameLevel(mapControlLevel)
     self.prevZoneButton:SetText("<")
     self.prevZoneButton:SetScript("OnClick", function()
         NT:ChangeDisplayedZone(-1)
     end)
 
-    self.nextZoneButton = CreateFrame("Button", nil, mapPanel, "UIPanelButtonTemplate")
-    self.nextZoneButton:SetWidth(22)
-    self.nextZoneButton:SetHeight(20)
+    self.nextZoneButton = makeButton(mapPanel, nil, 22, 20, function()
+        local index, zones = NT:GetDisplayedZoneIndex(1)
+        if index and zones and #zones > 1 then
+            return string.format(L["Next zone: %s"], zones[index].zoneName or L["Unknown"])
+        end
+        return nil
+    end)
     self.nextZoneButton:SetPoint("LEFT", self.prevZoneButton, "RIGHT", 196, 0)
+    self.nextZoneButton:SetFrameLevel(mapControlLevel)
     self.nextZoneButton:SetText(">")
     self.nextZoneButton:SetScript("OnClick", function()
         NT:ChangeDisplayedZone(1)
     end)
 
-    self.zoneMenuButton = CreateFrame("Button", nil, mapPanel, "UIPanelButtonTemplate")
-    self.zoneMenuButton:SetWidth(188)
-    self.zoneMenuButton:SetHeight(20)
+    self.zoneMenuButton = makeButton(mapPanel, nil, 188, 20)
     self.zoneMenuButton:SetPoint("LEFT", self.prevZoneButton, "RIGHT", 8, 0)
+    self.zoneMenuButton:SetFrameLevel(mapControlLevel)
     self.zoneMenuButton:SetText(L["Select zone"])
     self.zoneMenuButton:SetScript("OnClick", function()
         UI:ShowZoneMenu()
     end)
     self.mapZoneText = self.zoneMenuButton
 
+    -- Leaderboard panel. It shares the map's rect, and only one of the two is shown,
+    -- so the window keeps its fixed size.
+    local topPanel = CreateFrame("Frame", nil, frame)
+    topPanel:SetPoint("TOPLEFT", list, "TOPRIGHT", 12, 0)
+    topPanel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -12, 14)
+    createBackdrop(topPanel, 0.55)
+    topPanel:Hide()
+    self.topPanel = topPanel
+
+    self.topTitle = topPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    self.topTitle:SetPoint("TOPLEFT", topPanel, "TOPLEFT", 12, -10)
+    self.topTitle:SetTextColor(GOLD_HI[1], GOLD_HI[2], GOLD_HI[3])
+    self.topTitle:SetText(L["Top killers this month"])
+
+    self.topHeader = topPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.topHeader:SetPoint("TOPLEFT", topPanel, "TOPLEFT", 12, -30)
+    self.topHeader:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
+    self.topHeader:SetText(L["Place  Character  Kills / Revenge / Bounty / Best"])
+
+    self.topEmpty = topPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.topEmpty:SetPoint("TOPLEFT", topPanel, "TOPLEFT", 12, -54)
+    self.topEmpty:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
+    self.topEmpty:SetText(L["No kills recorded this month."])
+
+    self.topRows = {}
+
+    -- Own line: a separator plus one row, anchored to the bottom of the pane so it is
+    -- always visible regardless of how many leaderboard rows arrived.
+    self.topSelfLine = topPanel:CreateTexture(nil, "ARTWORK")
+    self.topSelfLine:SetHeight(1)
+    self.topSelfLine:SetPoint("BOTTOMLEFT", topPanel, "BOTTOMLEFT", 12, 34)
+    self.topSelfLine:SetPoint("BOTTOMRIGHT", topPanel, "BOTTOMRIGHT", -12, 34)
+    self.topSelfLine:SetTexture(GOLD[1], GOLD[2], GOLD[3], 0.45)
+    self.topSelfLine:Hide()
+
+    self.topSelfRow = CreateFrame("Frame", nil, topPanel)
+    self.topSelfRow:SetHeight(18)
+    self.topSelfRow:SetPoint("BOTTOMLEFT", topPanel, "BOTTOMLEFT", 12, 12)
+    self.topSelfRow:SetPoint("BOTTOMRIGHT", topPanel, "BOTTOMRIGHT", -12, 12)
+
+    self.topSelfRow.place = self.topSelfRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.topSelfRow.place:SetPoint("LEFT", self.topSelfRow, "LEFT", 0, 0)
+    self.topSelfRow.place:SetWidth(22)
+    self.topSelfRow.place:SetJustifyH("LEFT")
+
+    self.topSelfRow.name = self.topSelfRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.topSelfRow.name:SetPoint("LEFT", self.topSelfRow.place, "RIGHT", 4, 0)
+    self.topSelfRow.name:SetWidth(140)
+    self.topSelfRow.name:SetJustifyH("LEFT")
+
+    self.topSelfRow.stats = self.topSelfRow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    self.topSelfRow.stats:SetPoint("RIGHT", self.topSelfRow, "RIGHT", 0, 0)
+    self.topSelfRow.stats:SetWidth(160)
+    self.topSelfRow.stats:SetJustifyH("RIGHT")
+
+    self.topSelfRow:Hide()
+
     self.mapFallback = canvas:CreateTexture(nil, "BACKGROUND")
     self.mapFallback:SetAllPoints(canvas)
-    self.mapFallback:SetTexture(0.12, 0.12, 0.16, 0.95)
+    self.mapFallback:SetTexture(CARD[1], CARD[2], CARD[3], 0.95)
 
     self.markers = {}
 
-    self.prevPageButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    self.prevPageButton:SetWidth(26)
-    self.prevPageButton:SetHeight(20)
-    self.prevPageButton:SetPoint("BOTTOMLEFT", list, "TOPLEFT", 0, -4)
+    -- Leaderboard toggle, sitting before the pager in the same row.
+    self.topButton = makeButton(controls, nil, 46, 20)
+    self.topButton.toggleStyle = true
+    self.topButton:SetText(L["Top"])
+    self.topButton:SetScript("OnClick", function()
+        UI:ToggleLeaderboard()
+    end)
+    placeControl(controls, self.topButton, 10)
+
+    self.prevPageButton = makeButton(controls, nil, 26, 20)
     self.prevPageButton:SetText("<")
     self.prevPageButton:SetScript("OnClick", function()
         NT:ChangePage(-1)
     end)
+    placeControl(controls, self.prevPageButton, 14)
 
-    self.pageText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    self.pageText:SetPoint("LEFT", self.prevPageButton, "RIGHT", 8, 0)
+    self.pageText = controls:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    self.pageText:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
     self.pageText:SetText(L["Page 1/1"])
+    placeControl(controls, self.pageText, 6)
 
-    self.nextPageButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    self.nextPageButton:SetWidth(26)
-    self.nextPageButton:SetHeight(20)
-    self.nextPageButton:SetPoint("LEFT", self.pageText, "RIGHT", 8, 0)
+    self.nextPageButton = makeButton(controls, nil, 26, 20)
     self.nextPageButton:SetText(">")
     self.nextPageButton:SetScript("OnClick", function()
         NT:ChangePage(1)
     end)
+    placeControl(controls, self.nextPageButton, 6)
 
-    do
-        local resize = CreateFrame("Button", nil, frame)
-        resize:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -4, 4)
-        resize:SetWidth(16)
-        resize:SetHeight(16)
-        resize:EnableMouse(true)
-        resize:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-        resize:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-        resize:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-        resize:SetScript("OnMouseDown", function()
-            frame:StartSizing("BOTTOMRIGHT")
-        end)
-        resize:SetScript("OnMouseUp", function()
-            frame:StopMovingOrSizing()
-            NT.db.window.width = frame:GetWidth()
-            NT.db.window.height = frame:GetHeight()
-            UI:RefreshMap()
-        end)
-    end
-
-    do
-        local resize = CreateFrame("Button", nil, frame)
-        resize:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -4)
-        resize:SetWidth(16)
-        resize:SetHeight(16)
-        resize:EnableMouse(true)
-        resize:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-        resize:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-        resize:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-        resize:SetScript("OnMouseDown", function()
-            frame:StartSizing("TOPLEFT")
-        end)
-        resize:SetScript("OnMouseUp", function()
-            frame:StopMovingOrSizing()
-            NT.db.window.width = frame:GetWidth()
-            NT.db.window.height = frame:GetHeight()
-            UI:RefreshMap()
-        end)
-    end
+    -- No resize grabbers: the window is fixed-size by design.
 end
 
 

@@ -49,7 +49,7 @@ function NT:InitializeDatabase()
             autoPeerSync = true,
             reportSightingsToServer = true,
             peerSyncMaxEntries = 100,
-            reportThrottleSeconds = 20,
+            reportThrottleSeconds = 30,
             cache = { nemeses = {} },
         },
     }
